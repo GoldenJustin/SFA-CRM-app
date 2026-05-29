@@ -11,7 +11,7 @@ export default function StartDayScreen({ navigation }) {
 
   const checkDayStatus = async () => {
     const status = await AsyncStorage.getItem('dayStarted');
-    if (status === 'true') navigation.replace('MainTabs');
+    if (status === 'true') navigation.replace('MainTabs'); // Disabled temporarily for login testing
     setLoading(false);
   };
 
@@ -44,3 +44,5 @@ const styles = StyleSheet.create({
   startDayBtn: { backgroundColor: '#4CAF50', padding: 15, borderRadius: 8, width: '100%', alignItems: 'center', elevation: 3 },
   btnText: { color: 'white', fontWeight: 'bold', fontSize: 16 }
 });
+
+
