@@ -34,8 +34,12 @@ export const authFetch = async (endpoint, method = 'GET', body = null) => {
   const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json', 'Cookie': `sid=${sid}` };
   const config = { method, headers };
   if (body) config.body = JSON.stringify(body);
+  
+  console.log(`[API] ${method} ${endpoint}`, body ? JSON.stringify(body).substring(0, 300) : '');
   const response = await fetch(`${baseUrl}${endpoint}`, config);
-  return await response.json();
+  const result = await response.json();
+  console.log(`[API Response]`, JSON.stringify(result).substring(0, 500));
+  return result;
 };
 
 const uploadFileToERP = async (base64String, doctype, docname, fieldname) => {
@@ -43,27 +47,38 @@ const uploadFileToERP = async (base64String, doctype, docname, fieldname) => {
     const baseUrl = await getBaseUrl();
     const sid = await AsyncStorage.getItem('erp_sid');
     
+    console.log(`[File Upload] Attaching to ${doctype} ${docname} field ${fieldname}`);
+    
+    // Convert base64 to blob-like structure for FormData
+    const formData = new FormData();
+    formData.append('file', {
+      uri: `data:image/jpeg;base64,${base64String}`,
+      type: 'image/jpeg',
+      name: `evidence_${Date.now()}.jpg`
+    });
+    formData.append('doctype', doctype);
+    formData.append('docname', docname);
+    formData.append('fieldname', fieldname);
+    formData.append('is_private', '0');
+    
     const response = await fetch(`${baseUrl}/api/method/upload_file`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
         'Cookie': `sid=${sid}`
       },
-      body: JSON.stringify({
-        doctype: doctype,
-        docname: docname,
-        fieldname: fieldname,
-        filedata: `data:image/jpeg;base64,${base64String}`,
-        filename: `evidence_${Date.now()}.jpg`,
-        is_private: 0
-      })
+      body: formData
     });
     
     const result = await response.json();
-    console.log('File Upload Result:', result);
+    console.log('[File Upload Result]:', JSON.stringify(result).substring(0, 300));
+    
+    if (result.message && result.message.file_url) {
+      console.log('[File Upload] SUCCESS! URL:', result.message.file_url);
+      return { success: true, file_url: result.message.file_url };
+    }
     return result;
   } catch (e) {
-    console.error('File Upload Error:', e);
+    console.error('[File Upload Error]:', e);
     return { success: false, error: e.message };
   }
 };
@@ -71,13 +86,33 @@ const uploadFileToERP = async (base64String, doctype, docname, fieldname) => {
 export const pushLiveOrder = async (orderData) => {
   try {
     const erpDoctype = orderData.type === 'Quotation' ? 'Quotation' : 'Sales Order';
-    const itemsPayload = orderData.items.map(item => ({ item_code: item.id, qty: item.qty }));
-    const payload = { customer: orderData.clientName, items: itemsPayload, docstatus: 1 };
+    const itemsPayload = orderData.items.map(item => ({ 
+      item_code: item.id,
+      item_name: item.name,
+      qty: item.qty,
+      rate: item.price
+    }));
     
+    const payload = { 
+      customer: orderData.clientName,
+      delivery_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+      items: itemsPayload,
+      docstatus: 1 
+    };
+    
+    console.log(`[Push Live Order] Creating ${erpDoctype}`);
     const res = await authFetch(`/api/resource/${erpDoctype}`, 'POST', payload);
-    if (res.data && res.data.name) return { success: true, erpName: res.data.name };
-    return { success: false };
-  } catch (e) { return { success: false }; }
+    
+    if (res.data && res.data.name) {
+      console.log(`[Push Live Order] SUCCESS: ${res.data.name}`);
+      return { success: true, erpName: res.data.name };
+    }
+    console.error('[Push Live Order] FAILED:', res);
+    return { success: false, error: res };
+  } catch (e) { 
+    console.error('[Push Live Order] EXCEPTION:', e);
+    return { success: false, error: e.message }; 
+  }
 };
 
 export const pushLiveVisit = async (visitData) => {
@@ -87,24 +122,37 @@ export const pushLiveVisit = async (visitData) => {
       start_time: visitData.start_time.replace('T', ' ').substring(0, 19),
       end_time: visitData.end_time.replace('T', ' ').substring(0, 19),
       outcome: visitData.outcome,
-      no_order_reason: visitData.no_order_reason,
-      competitor_brands: visitData.competitor_brands,
-      custom_latitude: visitData.lat?.toString(),
-      custom_longitude: visitData.lng?.toString(),
-      docstatus: 1
+      no_order_reason: visitData.no_order_reason || '',
+      competitor_brands: visitData.competitor_brands || '',
+      custom_latitude: visitData.lat?.toString() || '',
+      custom_longitude: visitData.lng?.toString() || '',
+      docstatus: 0
     };
     
+    console.log('[Push Live Visit] Creating Visit Log (Draft)...');
     const res = await authFetch('/api/resource/Visit Log', 'POST', payload);
+    
     if (res.data && res.data.name) {
+      console.log(`[Push Live Visit] Visit Created: ${res.data.name}`);
+      
       if (visitData.photoBase64) {
-        console.log('Attempting to upload photo for Visit Log:', res.data.name);
+        console.log('[Push Live Visit] Uploading evidence photo...');
         const uploadResult = await uploadFileToERP(visitData.photoBase64, 'Visit Log', res.data.name, 'evidence_photo');
-        console.log('Upload Result:', uploadResult);
+        console.log('[Push Live Visit] Upload Result:', uploadResult);
       }
+      
+      console.log('[Push Live Visit] Submitting document...');
+      const submitRes = await authFetch(`/api/resource/Visit Log/${res.data.name}`, 'PUT', { docstatus: 1 });
+      console.log('[Push Live Visit] Submit Result:', submitRes);
+      
       return { success: true, erpName: res.data.name };
     }
-    return { success: false };
-  } catch (e) { return { success: false }; }
+    console.error('[Push Live Visit] FAILED:', res);
+    return { success: false, error: res };
+  } catch (e) { 
+    console.error('[Push Live Visit] EXCEPTION:', e);
+    return { success: false, error: e.message }; 
+  }
 };
 
 export const pullMasterData = async () => {
@@ -166,16 +214,18 @@ export const syncAllDataToERP = async () => {
             customer: visits[i].customer, start_time: visits[i].start_time.replace('T', ' ').substring(0, 19),
             end_time: visits[i].end_time.replace('T', ' ').substring(0, 19), outcome: visits[i].outcome,
             no_order_reason: visits[i].no_order_reason, competitor_brands: visits[i].competitor_brands,
-            docstatus: 1
+            custom_latitude: visits[i].lat?.toString(), custom_longitude: visits[i].lng?.toString(),
+            docstatus: 0
           };
           try {
             const res = await authFetch('/api/resource/Visit Log', 'POST', payload);
             if (res?.data?.name) { 
-              visits[i].status = 'Synced'; 
-              syncLog.visits += 1; 
               if (visits[i].photoBase64) {
                 await uploadFileToERP(visits[i].photoBase64, 'Visit Log', res.data.name, 'evidence_photo');
               }
+              await authFetch(`/api/resource/Visit Log/${res.data.name}`, 'PUT', { docstatus: 1 });
+              visits[i].status = 'Synced'; 
+              syncLog.visits += 1; 
             } else { syncLog.errors.push(`Visit for ${visits[i].customer} Error`); }
           } catch(err) { syncLog.errors.push(`Visit ${visits[i].customer} failed.`); }
         }
@@ -189,8 +239,14 @@ export const syncAllDataToERP = async () => {
       for (let i = 0; i < orders.length; i++) {
         if (orders[i].status === 'Pending Sync') {
           const erpDoctype = orders[i].type === 'Quotation' ? 'Quotation' : 'Sales Order';
-          const itemsPayload = orders[i].items.map(item => ({ item_code: item.id, qty: item.qty }));
-          const payload = { customer: orders[i].clientName, items: itemsPayload, docstatus: 1 };
+          const itemsPayload = orders[i].items.map(item => ({ 
+            item_code: item.id, item_name: item.name, qty: item.qty, rate: item.price
+          }));
+          const payload = { 
+            customer: orders[i].clientName, 
+            delivery_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+            items: itemsPayload, docstatus: 1 
+          };
           try {
             const res = await authFetch(`/api/resource/${erpDoctype}`, 'POST', payload);
             if (res?.data?.name) { orders[i].status = 'Synced'; orders[i].erpName = res.data.name; syncLog.orders += 1; } 
