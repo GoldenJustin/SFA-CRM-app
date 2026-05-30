@@ -21,24 +21,31 @@ export default function SyncScreen() {
     setIsSyncing(true);
     setLogs("Starting sync process...\n");
     
-    const result = await syncAllDataToERP();
-    
-    if (result.success) {
-      const now = Date.now();
-      await AsyncStorage.setItem('lastSyncTime', now.toString());
-      setLastSync(new Date(now).toLocaleString());
+    try {
+      const result = await syncAllDataToERP();
       
-      let msg = `Sync Complete!\nClients Pushed: ${result.log.clients}\nVisits Pushed: ${result.log.visits}\n`;
-      if (result.log.errors.length > 0) {
-        msg += `\nErrors:\n${result.log.errors.join('\n')}`;
+      if (result && result.success) {
+        const now = Date.now();
+        await AsyncStorage.setItem('lastSyncTime', now.toString());
+        setLastSync(new Date(now).toLocaleString());
+        
+        let msg = `Sync Complete!\nClients: ${result.log.clients}\nVisits: ${result.log.visits}\nOrders: ${result.log.orders}\n`;
+        if (result.log.errors.length > 0) {
+          msg += `\nErrors:\n${result.log.errors.join('\n')}`;
+        }
+        setLogs(msg);
+        Alert.alert("Sync Finished", "Check logs below for details.");
+      } else {
+        Alert.alert("Sync Failed", result?.error || "Unknown Error");
+        setLogs(`Critical Error: ${result?.error || "Unknown Error"}`);
       }
-      setLogs(msg);
-      Alert.alert("Sync Finished", `Successfully pushed data to ERPNext.`);
-    } else {
-      Alert.alert("Sync Failed", result.error);
-      setLogs(`Error: ${result.error}`);
+    } catch (e) {
+      Alert.alert("Crash", "The sync engine encountered a critical error.");
+      setLogs(`System Crash: ${e.message}`);
+    } finally {
+      // THIS GUARANTEES THE SPINNER ALWAYS STOPS
+      setIsSyncing(false);
     }
-    setIsSyncing(false);
   };
 
   return (

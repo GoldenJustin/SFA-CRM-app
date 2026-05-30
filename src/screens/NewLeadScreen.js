@@ -3,8 +3,10 @@ import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Alert,
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function NewLeadScreen({ navigation }) {
+  const insets = useSafeAreaInsets();
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [businessType, setBusinessType] = useState('Retail Shop');
@@ -31,7 +33,7 @@ export default function NewLeadScreen({ navigation }) {
 
   const saveClient = async () => {
     if (!name || !phone || !location) return Alert.alert("Error", "Name, Phone, and GPS are mandatory!");
-    if (contactRole !== 'Owner' && !ownerPhone) return Alert.alert("Error", "Since contact is not the owner, Owner's Phone is required.");
+    if (contactRole !== 'Owner' && !ownerPhone) return Alert.alert("Error", "Owner's Phone is required.");
 
     const newClient = {
       id: Date.now().toString(),
@@ -51,7 +53,7 @@ export default function NewLeadScreen({ navigation }) {
   };
 
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + 40 }} style={styles.container}>
       <Text style={styles.header}>Deep Client KYC</Text>
       
       <Text style={styles.label}>Business Name</Text>
@@ -86,7 +88,7 @@ export default function NewLeadScreen({ navigation }) {
       )}
 
       <Text style={styles.label}>General Observations / Notes</Text>
-      <TextInput style={[styles.input, {height: 80}]} multiline placeholder="E.g., Shop is very busy, located near corner..." value={notes} onChangeText={setNotes} />
+      <TextInput style={[styles.input, {height: 80}]} multiline placeholder="E.g., Shop is very busy..." value={notes} onChangeText={setNotes} />
 
       <TouchableOpacity style={[styles.gpsBtn, location && {backgroundColor: '#4CAF50'}]} onPress={getRealGPS}>
         <Text style={styles.btnText}>{location ? `✅ GPS: ${location.latitude.toFixed(4)}, ${location.longitude.toFixed(4)}` : "📍 Capture Real GPS"}</Text>
@@ -95,6 +97,7 @@ export default function NewLeadScreen({ navigation }) {
       <TouchableOpacity style={styles.photoBtn} onPress={openCamera}>
         <Text style={styles.btnText}>{photoUri ? "✅ Storefront Captured" : "📸 Capture Storefront"}</Text>
       </TouchableOpacity>
+      {photoUri && <Image source={{uri: photoUri}} style={{width: 100, height: 100, borderRadius: 8, marginBottom: 20}} />}
 
       <TouchableOpacity style={styles.saveBtn} onPress={saveClient}>
         <Text style={styles.btnText}>Register Detailed KYC</Text>
@@ -104,7 +107,7 @@ export default function NewLeadScreen({ navigation }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f4f4f4', padding: 20 },
+  container: { flex: 1, backgroundColor: '#f4f4f4' },
   header: { fontSize: 22, fontWeight: 'bold', marginBottom: 15, color: '#D32F2F' },
   label: { fontSize: 14, fontWeight: 'bold', marginBottom: 5, color: '#333' },
   input: { backgroundColor: 'white', borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12, marginBottom: 15 },
@@ -113,7 +116,6 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: '#1976D2' },
   gpsBtn: { backgroundColor: '#1976D2', padding: 15, borderRadius: 8, alignItems: 'center', marginBottom: 10 },
   photoBtn: { backgroundColor: '#FF9800', padding: 15, borderRadius: 8, alignItems: 'center', marginBottom: 20 },
-  saveBtn: { backgroundColor: '#D32F2F', padding: 15, borderRadius: 8, alignItems: 'center', marginBottom: 40 },
+  saveBtn: { backgroundColor: '#D32F2F', padding: 15, borderRadius: 8, alignItems: 'center', marginTop: 10 },
   btnText: { color: 'white', fontWeight: 'bold' }
 });
-

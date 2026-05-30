@@ -1,16 +1,21 @@
 ﻿import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView, Alert, ActivityIndicator, Image } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as ImagePicker from 'expo-image-picker';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Location from 'expo-location';
+import { pushLiveVisit } from '../api';
 
 export default function VisitCheckInScreen({ navigation, route }) {
+  const insets = useSafeAreaInsets();
   const clientName = route.params?.clientName || "Assigned Client";
   const [loading, setLoading] = useState(true);
   const [startTime, setStartTime] = useState(null);
-  
   const [outcome, setOutcome] = useState(null);
   const [reason, setReason] = useState('');
   const [competitors, setCompetitors] = useState('');
+  const [photoUri, setPhotoUri] = useState(null);
 
   useEffect(() => { checkActiveVisit(); }, []);
 
@@ -26,16 +31,36 @@ export default function VisitCheckInScreen({ navigation, route }) {
     setStartTime(now);
     await AsyncStorage.setItem('activeVisitClient', clientName);
     await AsyncStorage.setItem('activeVisitTime', now.toString());
+    
+    let { status } = await Location.requestForegroundPermissionsAsync();
+    if (status === 'granted') { 
+      let loc = await Location.getCurrentPositionAsync({}); 
+      await AsyncStorage.setItem('activeLat', loc.coords.latitude.toString()); 
+      await AsyncStorage.setItem('activeLng', loc.coords.longitude.toString()); 
+    }
+  };
+
+  const openCamera = async () => {
+    let result = await ImagePicker.launchCameraAsync({ quality: 0.3, base64: true });
+    if (!result.canceled) { 
+      setPhotoUri(result.assets[0].uri); 
+      await AsyncStorage.setItem('activePhotoBase64', result.assets[0].base64); 
+    }
   };
 
   const endVisit = async () => {
     if (!outcome) return Alert.alert("Required", "You must Take an Order or flag No Order.");
-    if (outcome === 'no_order' && !reason) return Alert.alert("Required", "Reason is mandatory for No Order.");
+    if (outcome === 'no_order' && (!reason || !photoUri)) return Alert.alert("Required", "Reason and Evidence Photo are mandatory for No Order.");
 
     const endTime = Date.now();
+    const b64 = await AsyncStorage.getItem('activePhotoBase64');
+    const lat = await AsyncStorage.getItem('activeLat');
+    const lng = await AsyncStorage.getItem('activeLng');
     
-    // Create the Visit Record
     const visitRecord = {
+      lat: lat ? parseFloat(lat) : null,
+      lng: lng ? parseFloat(lng) : null,
+      photoBase64: b64,
       id: endTime.toString(),
       customer: clientName,
       start_time: new Date(startTime).toISOString(),
@@ -47,17 +72,29 @@ export default function VisitCheckInScreen({ navigation, route }) {
     };
 
     try {
-      // Save offline
+      console.log('Visit Record Being Sent:', visitRecord);
+      const livePush = await pushLiveVisit(visitRecord);
+      console.log('Visit Push Result:', livePush);
+      
+      if (livePush.success) {
+        visitRecord.status = 'Synced';
+        Alert.alert("Live Success", `Visit logged to ERPNext! ${livePush.erpName || ''}`);
+      } else {
+        Alert.alert("Offline Mode", "Saved locally. Sync later.");
+      }
+
       const existingVisits = await AsyncStorage.getItem('offlineVisits');
       const visitsArray = existingVisits ? JSON.parse(existingVisits) : [];
       visitsArray.push(visitRecord);
       await AsyncStorage.setItem('offlineVisits', JSON.stringify(visitsArray));
 
-      // Clear active state
       await AsyncStorage.removeItem('activeVisitClient');
       await AsyncStorage.removeItem('activeVisitTime');
+      await AsyncStorage.removeItem('activePhotoBase64'); 
+      await AsyncStorage.removeItem('activeLat'); 
+      await AsyncStorage.removeItem('activeLng');
 
-      Alert.alert("Checkout Complete", "Visit safely logged offline.", [{ text: "OK", onPress: () => navigation.goBack() }]);
+      Alert.alert("Checkout Complete", "Visit safely logged.", [{ text: "OK", onPress: () => navigation.goBack() }]);
     } catch (e) {
       Alert.alert("Error", "Could not save visit.");
     }
@@ -77,17 +114,23 @@ export default function VisitCheckInScreen({ navigation, route }) {
   }
 
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView contentContainerStyle={{ padding: 15, paddingBottom: insets.bottom + 40 }} style={styles.container}>
       <View style={styles.card}>
         <Text style={styles.activeText}>🟢 Active Visit: {clientName}</Text>
 
         <Text style={styles.label}>Competitor Brands on Shelf:</Text>
-        <TextInput style={styles.input} placeholder="E.g., Brand X, Brand Y" value={competitors} onChangeText={setCompetitors} />
+        <View style={{flexDirection: 'row', flexWrap: 'wrap', marginBottom: 15}}>
+          {['Brand X', 'Brand Y', 'Local Brand', 'None'].map(brand => (
+            <TouchableOpacity key={brand} onPress={() => setCompetitors(competitors.includes(brand) ? competitors.replace(brand+', ', '') : competitors + brand + ', ')} style={{backgroundColor: competitors.includes(brand) ? '#1976D2' : '#ddd', padding: 10, borderRadius: 20, margin: 5}}>
+              <Text style={{color: competitors.includes(brand) ? 'white' : 'black'}}>{brand}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
 
         {!outcome ? (
           <View style={{marginTop: 20}}>
             <TouchableOpacity style={styles.orderBtn} onPress={() => { setOutcome('order'); navigation.navigate('ProductCatalog', {clientName}); }}>
-              <Text style={styles.btnText}>TAKE ORDER</Text>
+              <Text style={styles.btnText}>TAKE ORDER / QUOTE</Text>
             </TouchableOpacity>
             <Text style={{textAlign: 'center', marginVertical: 10}}>--- OR ---</Text>
             <TouchableOpacity style={styles.noOrderBtn} onPress={() => setOutcome('no_order')}>
@@ -106,7 +149,11 @@ export default function VisitCheckInScreen({ navigation, route }) {
         {outcome === 'no_order' && (
           <View style={styles.noOrderBox}>
             <Text style={styles.label}>Reason for No Order:</Text>
-            <TextInput style={styles.input} placeholder="Reason..." value={reason} onChangeText={setReason} />
+            <TextInput style={styles.input} placeholder="e.g., Shop Closed, Boss Absent..." value={reason} onChangeText={setReason} />
+            <TouchableOpacity style={[styles.cameraBtn, photoUri && {backgroundColor: '#4CAF50'}]} onPress={openCamera}>
+              <Text style={styles.btnText}>{photoUri ? "Evidence Captured" : "Take Evidence Photo"}</Text>
+            </TouchableOpacity>
+            {photoUri && <Image source={{uri: photoUri}} style={{width: '100%', height: 200, borderRadius: 8, marginTop: 15}} />}
           </View>
         )}
 
@@ -120,7 +167,7 @@ export default function VisitCheckInScreen({ navigation, route }) {
 
 const styles = StyleSheet.create({
   centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
-  container: { flex: 1, padding: 15, backgroundColor: '#f4f4f4' },
+  container: { flex: 1, backgroundColor: '#f4f4f4' },
   card: { backgroundColor: 'white', padding: 20, borderRadius: 10, elevation: 3 },
   title: { fontSize: 22, fontWeight: 'bold', marginBottom: 20 },
   activeText: { color: '#4CAF50', fontWeight: 'bold', marginBottom: 15, textAlign: 'center', fontSize: 16 },
@@ -132,6 +179,7 @@ const styles = StyleSheet.create({
   lockedBox: { backgroundColor: '#e3f2fd', padding: 15, borderRadius: 8, alignItems: 'center', marginVertical: 20 },
   lockedText: { fontWeight: 'bold', fontSize: 16 },
   noOrderBox: { backgroundColor: '#FFF3E0', padding: 15, borderRadius: 8, marginTop: 10 },
+  cameraBtn: { backgroundColor: '#FF9800', padding: 10, borderRadius: 8, alignItems: 'center' },
   checkoutBtn: { backgroundColor: '#D32F2F', padding: 15, borderRadius: 8, alignItems: 'center', marginTop: 30 },
   btnText: { color: 'white', fontWeight: 'bold' }
 });

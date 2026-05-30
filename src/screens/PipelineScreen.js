@@ -1,10 +1,10 @@
 ﻿import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, FlatList } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 
-export default function PipelineScreen() {
+export default function PipelineScreen({ navigation }) {
   const [orders, setOrders] = useState([]);
 
   useFocusEffect(
@@ -19,10 +19,10 @@ export default function PipelineScreen() {
   };
 
   const renderItem = ({ item }) => (
-    <View style={styles.card}>
+    <TouchableOpacity style={styles.card} onPress={() => navigation.navigate('OrderDetails', { order: item })}>
       <View style={styles.row}>
         <Text style={styles.client}>{item.clientName}</Text>
-        <Text style={styles.amount}>${item.total.toFixed(2)}</Text>
+        <Text style={styles.amount}>Tsh {item.total.toLocaleString()}</Text>
       </View>
       <View style={styles.row}>
         <View style={[styles.badge, { backgroundColor: item.type === 'Quotation' ? '#FF9800' : '#4CAF50' }]}>
@@ -30,7 +30,7 @@ export default function PipelineScreen() {
         </View>
         <Text style={styles.date}>{new Date(item.date).toLocaleDateString()}</Text>
       </View>
-    </View>
+    </TouchableOpacity>
   );
 
   return (
@@ -39,7 +39,7 @@ export default function PipelineScreen() {
       {orders.length === 0 ? (
         <Text style={{textAlign: 'center', color: 'gray', marginTop: 50}}>No orders placed yet.</Text>
       ) : (
-        <FlatList data={orders} keyExtractor={item => item.id} renderItem={renderItem} />
+        <FlatList data={orders} keyExtractor={item => item.id} renderItem={renderItem} contentContainerStyle={{paddingBottom: 20}} />
       )}
     </SafeAreaView>
   );

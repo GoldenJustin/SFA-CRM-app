@@ -37,22 +37,27 @@ export default function DashboardScreen({ navigation }) {
             <Text style={styles.headerTitle}>Overview</Text>
             <Text style={styles.headerSub}>Sales Rep Dashboard</Text>
           </View>
-          <TouchableOpacity style={styles.endDayBtn} onPress={handleEndDay}>
-            <MaterialCommunityIcons name="logout" size={20} color="#D32F2F" />
-            <Text style={styles.endDayText}>End Day</Text>
-          </TouchableOpacity>
+          <View style={{flexDirection: 'row', alignItems: 'center'}}>
+            <TouchableOpacity style={styles.syncIconBtn} onPress={() => navigation.navigate('Sync')}>
+              <MaterialCommunityIcons name="cloud-sync" size={24} color="white" />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.endDayBtn} onPress={handleEndDay}>
+              <MaterialCommunityIcons name="logout" size={20} color="#D32F2F" />
+              <Text style={styles.endDayText}>End Day</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         <Text style={styles.sectionTitle}>Today's Assigned Route ({routeClients.length})</Text>
         
         {routeClients.length === 0 ? (
-          <Text style={styles.noDataText}>No clients assigned. Add via Clients tab.</Text>
+          <Text style={styles.noDataText}>No clients assigned. Sync or add via Clients tab.</Text>
         ) : (
           routeClients.map(client => (
             <View key={client.id} style={styles.clientCard}>
               <View>
                 <Text style={styles.clientName}>{client.name}</Text>
-                <Text style={styles.clientSub}>{client.businessType || 'Retail'}</Text>
+                <Text style={styles.clientSub}>{client.businessType || 'Customer'}</Text>
               </View>
               <TouchableOpacity style={styles.visitBtn} onPress={() => navigation.navigate('VisitCheckIn', { clientName: client.name })}>
                 <Text style={styles.btnText}>Start</Text>
@@ -70,6 +75,7 @@ const styles = StyleSheet.create({
   headerCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#D32F2F', padding: 25, borderBottomLeftRadius: 20, borderBottomRightRadius: 20, elevation: 5 },
   headerTitle: { color: 'white', fontSize: 24, fontWeight: 'bold' },
   headerSub: { color: '#ffcdd2', fontSize: 14, marginTop: 2 },
+  syncIconBtn: { marginRight: 15, padding: 5 },
   endDayBtn: { flexDirection: 'row', backgroundColor: 'white', paddingHorizontal: 15, paddingVertical: 8, borderRadius: 20, alignItems: 'center' },
   endDayText: { color: '#D32F2F', fontWeight: 'bold', marginLeft: 5 },
   sectionTitle: { fontSize: 18, fontWeight: 'bold', margin: 20, color: '#333' },
