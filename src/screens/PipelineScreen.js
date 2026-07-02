@@ -1,58 +1,82 @@
-﻿import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 export default function PipelineScreen({ navigation }) {
   const [orders, setOrders] = useState([]);
+  const [totalVal, setTotalVal] = useState(0);
 
-  useFocusEffect(
-    useCallback(() => { loadOrders(); }, [])
-  );
+  useFocusEffect(useCallback(() => { loadOrders(); }, []));
 
   const loadOrders = async () => {
     try {
       const storedOrders = await AsyncStorage.getItem('offlineOrders');
-      if (storedOrders) setOrders(JSON.parse(storedOrders));
+      if (storedOrders) {
+        const parsed = JSON.parse(storedOrders);
+        setOrders(parsed);
+        // FIX: Added Number() fallback to prevent toLocaleString crashes
+        setTotalVal(parsed.reduce((sum, o) => sum + (Number(o.total) || 0), 0));
+      }
     } catch (e) {}
   };
 
   const renderItem = ({ item }) => (
     <TouchableOpacity style={styles.card} onPress={() => navigation.navigate('OrderDetails', { order: item })}>
-      <View style={styles.row}>
-        <Text style={styles.client}>{item.clientName}</Text>
-        <Text style={styles.amount}>Tsh {item.total.toLocaleString()}</Text>
+      <View style={styles.cardHeader}>
+        <Text style={styles.client} numberOfLines={1}>{item.clientName}</Text>
+        <Text style={styles.amount}>Tsh {(Number(item.total) || 0).toLocaleString()}</Text>
       </View>
-      <View style={styles.row}>
-        <View style={[styles.badge, { backgroundColor: item.type === 'Quotation' ? '#FF9800' : '#4CAF50' }]}>
-          <Text style={styles.badgeText}>{item.type}</Text>
+      <View style={styles.cardFooter}>
+        <View style={styles.typeBadge}><Text style={styles.typeText}>{item.type}</Text></View>
+        <View style={[styles.statusBadge, {backgroundColor: item.status === 'Synced' ? '#e8f5e9' : '#ffebee'}]}>
+          <Text style={[styles.statusText, {color: item.status === 'Synced' ? '#2e7d32' : '#c62828'}]}>{item.status}</Text>
         </View>
-        <Text style={styles.date}>{new Date(item.date).toLocaleDateString()}</Text>
       </View>
+      <Text style={styles.date}>{new Date(item.date).toLocaleString()}</Text>
     </TouchableOpacity>
   );
 
   return (
     <SafeAreaView style={styles.container}>
-      <Text style={styles.headerTitle}>My Pipeline</Text>
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>My Orders</Text>
+        <Text style={styles.headerSub}>Total Pipeline: Tsh {(Number(totalVal) || 0).toLocaleString()}</Text>
+      </View>
       {orders.length === 0 ? (
-        <Text style={{textAlign: 'center', color: 'gray', marginTop: 50}}>No orders placed yet.</Text>
+        <View style={styles.emptyBox}>
+          <MaterialCommunityIcons name="cart-off" size={60} color="#ccc" />
+          <Text style={styles.emptyText}>No orders placed yet.</Text>
+        </View>
       ) : (
-        <FlatList data={orders} keyExtractor={item => item.id} renderItem={renderItem} contentContainerStyle={{paddingBottom: 20}} />
+        <FlatList 
+          data={orders} 
+          keyExtractor={(item, index) => item.id ? item.id.toString() : index.toString()} 
+          renderItem={renderItem} 
+          contentContainerStyle={{padding: 15, paddingBottom: 100}} 
+        />
       )}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f4f4f4', padding: 15 },
-  headerTitle: { fontSize: 24, fontWeight: 'bold', color: '#333', marginBottom: 20, marginLeft: 5 },
-  card: { backgroundColor: 'white', borderRadius: 12, padding: 20, marginBottom: 12, elevation: 2 },
-  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  client: { fontSize: 16, fontWeight: 'bold', color: '#333' },
-  amount: { fontSize: 18, fontWeight: 'bold', color: '#D32F2F' },
-  badge: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 },
-  badgeText: { color: 'white', fontSize: 12, fontWeight: 'bold' },
-  date: { color: 'gray', fontSize: 12 }
+  container: { flex: 1, backgroundColor: '#f9f9f9' },
+  header: { backgroundColor: '#D32F2F', padding: 25, borderBottomLeftRadius: 20, borderBottomRightRadius: 20, elevation: 5 },
+  headerTitle: { fontSize: 28, fontWeight: 'bold', color: 'white' },
+  headerSub: { fontSize: 15, color: '#ffcdd2', marginTop: 5, fontWeight: 'bold' },
+  emptyBox: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  emptyText: { color: 'gray', marginTop: 10, fontSize: 16 },
+  card: { backgroundColor: 'white', borderRadius: 15, padding: 20, marginBottom: 15, elevation: 2 },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
+  client: { fontSize: 16, fontWeight: 'bold', color: '#333', flex: 1, marginRight: 10 },
+  amount: { fontSize: 18, fontWeight: '900', color: '#D32F2F' },
+  cardFooter: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  typeBadge: { backgroundColor: '#f0f0f0', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, marginRight: 10 },
+  typeText: { fontSize: 12, fontWeight: 'bold', color: '#555' },
+  statusBadge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
+  statusText: { fontSize: 12, fontWeight: 'bold' },
+  date: { fontSize: 12, color: 'gray', textAlign: 'right' }
 });

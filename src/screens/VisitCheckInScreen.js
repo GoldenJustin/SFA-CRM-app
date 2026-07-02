@@ -1,185 +1,222 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView, Alert, ActivityIndicator, Image } from 'react-native';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { pushLiveVisit } from '../api';
 
 export default function VisitCheckInScreen({ navigation, route }) {
   const insets = useSafeAreaInsets();
-  const clientName = route.params?.clientName || "Assigned Client";
-  const [loading, setLoading] = useState(true);
+  const { clientName } = route.params || {};
+  const [loading, setLoading] = useState(false);
   const [startTime, setStartTime] = useState(null);
   const [outcome, setOutcome] = useState(null);
   const [reason, setReason] = useState('');
-  const [competitors, setCompetitors] = useState('');
+  const [photoBase64, setPhotoBase64] = useState(null);
   const [photoUri, setPhotoUri] = useState(null);
 
-  useEffect(() => { checkActiveVisit(); }, []);
-
-  const checkActiveVisit = async () => {
-    const activeClient = await AsyncStorage.getItem('activeVisitClient');
-    const activeTime = await AsyncStorage.getItem('activeVisitTime');
-    if (activeClient === clientName && activeTime) setStartTime(parseInt(activeTime));
-    setLoading(false);
-  };
+  useEffect(() => {
+    if (route.params?.orderPlaced) {
+      setOutcome('order_taken');
+    }
+  }, [route.params?.orderPlaced]);
 
   const startVisit = async () => {
-    const now = Date.now();
-    setStartTime(now);
-    await AsyncStorage.setItem('activeVisitClient', clientName);
-    await AsyncStorage.setItem('activeVisitTime', now.toString());
-    
+    setLoading(true);
     let { status } = await Location.requestForegroundPermissionsAsync();
-    if (status === 'granted') { 
-      let loc = await Location.getCurrentPositionAsync({}); 
-      await AsyncStorage.setItem('activeLat', loc.coords.latitude.toString()); 
-      await AsyncStorage.setItem('activeLng', loc.coords.longitude.toString()); 
+    if (status !== 'granted') { Alert.alert('Error', 'GPS Required'); setLoading(false); return; }
+    
+    try {
+      let loc = await Location.getLastKnownPositionAsync({});
+      if(!loc) loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Lowest });
+      
+      setStartTime(Date.now());
+      await AsyncStorage.setItem('activeLat', loc.coords.latitude.toString());
+      await AsyncStorage.setItem('activeLng', loc.coords.longitude.toString());
+    } catch (e) {
+      Alert.alert("GPS Error", "Could not capture location.");
     }
+    setLoading(false);
   };
 
   const openCamera = async () => {
     let result = await ImagePicker.launchCameraAsync({ quality: 0.3, base64: true });
     if (!result.canceled) { 
       setPhotoUri(result.assets[0].uri); 
-      await AsyncStorage.setItem('activePhotoBase64', result.assets[0].base64); 
+      setPhotoBase64(result.assets[0].base64); 
     }
   };
 
-  const endVisit = async () => {
-    if (!outcome) return Alert.alert("Required", "You must Take an Order or flag No Order.");
-    if (outcome === 'no_order' && (!reason || !photoUri)) return Alert.alert("Required", "Reason and Evidence Photo are mandatory for No Order.");
+  // FIX: Created a proper async handler to prevent the Syntax Error
+  const handleTakeOrder = async () => {
+    const lat = await AsyncStorage.getItem('activeLat');
+    const lng = await AsyncStorage.getItem('activeLng');
+    navigation.navigate('ProductCatalog', {
+      clientName, 
+      visitStartTime: startTime, 
+      activeLat: lat, 
+      activeLng: lng
+    });
+  };
 
-    const endTime = Date.now();
-    const b64 = await AsyncStorage.getItem('activePhotoBase64');
+  const endVisit = async () => {
+    if (!outcome) return Alert.alert("Required", "Select an outcome (Take Order or Flag No Order).");
+    if (outcome === 'no_order' && (!reason || !photoBase64)) return Alert.alert("Required", "Reason and Evidence Photo required for No Order.");
+    
+    setLoading(true);
     const lat = await AsyncStorage.getItem('activeLat');
     const lng = await AsyncStorage.getItem('activeLng');
     
     const visitRecord = {
-      lat: lat ? parseFloat(lat) : null,
-      lng: lng ? parseFloat(lng) : null,
-      photoBase64: b64,
-      id: endTime.toString(),
       customer: clientName,
-      start_time: new Date(startTime).toISOString(),
-      end_time: new Date(endTime).toISOString(),
-      outcome: outcome === 'order' ? 'Order Taken' : 'No Order',
-      no_order_reason: reason,
-      competitor_brands: competitors,
-      status: 'Pending Sync'
+      start_time: new Date(startTime).toISOString().replace('T', ' ').substring(0, 19), 
+      end_time: new Date().toISOString().replace('T', ' ').substring(0, 19),
+      outcome: outcome === 'order_taken' ? 'Order Taken' : 'No Order',
+      no_order_reason: reason, photoBase64: photoBase64,
+      lat: parseFloat(lat), lng: parseFloat(lng), status: 'Pending Sync'
     };
-
-    try {
-      console.log('Visit Record Being Sent:', visitRecord);
-      const livePush = await pushLiveVisit(visitRecord);
-      console.log('Visit Push Result:', livePush);
-      
-      if (livePush.success) {
-        visitRecord.status = 'Synced';
-        Alert.alert("Live Success", `Visit logged to ERPNext! ${livePush.erpName || ''}`);
-      } else {
-        Alert.alert("Offline Mode", "Saved locally. Sync later.");
-      }
-
-      const existingVisits = await AsyncStorage.getItem('offlineVisits');
-      const visitsArray = existingVisits ? JSON.parse(existingVisits) : [];
-      visitsArray.push(visitRecord);
-      await AsyncStorage.setItem('offlineVisits', JSON.stringify(visitsArray));
-
-      await AsyncStorage.removeItem('activeVisitClient');
-      await AsyncStorage.removeItem('activeVisitTime');
-      await AsyncStorage.removeItem('activePhotoBase64'); 
-      await AsyncStorage.removeItem('activeLat'); 
-      await AsyncStorage.removeItem('activeLng');
-
-      Alert.alert("Checkout Complete", "Visit safely logged.", [{ text: "OK", onPress: () => navigation.goBack() }]);
-    } catch (e) {
-      Alert.alert("Error", "Could not save visit.");
-    }
+    
+    const livePush = await pushLiveVisit(visitRecord);
+    if (livePush.success) visitRecord.status = 'Synced';
+    
+    const existing = await AsyncStorage.getItem('offlineVisits');
+    const visitsArray = existing ? JSON.parse(existing) : [];
+    visitsArray.push(visitRecord);
+    await AsyncStorage.setItem('offlineVisits', JSON.stringify(visitsArray));
+    
+    await AsyncStorage.removeItem('activeLat');
+    await AsyncStorage.removeItem('activeLng');
+    setLoading(false);
+    
+    Alert.alert("Complete", "Visit Logged Successfully.", [{ text: "OK", onPress: () => navigation.navigate('HomeMain') }]);
   };
 
   if (loading) return <View style={styles.centerContainer}><ActivityIndicator size="large" color="#D32F2F" /></View>;
-
+  
   if (!startTime) {
     return (
       <View style={styles.centerContainer}>
+        <View style={styles.iconCircle}>
+          <MaterialCommunityIcons name="store-marker" size={50} color="#D32F2F" />
+        </View>
         <Text style={styles.title}>{clientName}</Text>
+        <Text style={{color: 'gray', marginBottom: 40, fontSize: 16}}>Check-in to register your GPS</Text>
         <TouchableOpacity style={styles.startBtn} onPress={startVisit}>
-          <Text style={styles.btnText}>START VISIT</Text>
+          <MaterialCommunityIcons name="map-marker-radius" size={24} color="white" style={{marginRight: 10}} />
+          <Text style={styles.btnText}>CHECK-IN NOW</Text>
         </TouchableOpacity>
       </View>
     );
   }
 
   return (
-    <ScrollView contentContainerStyle={{ padding: 15, paddingBottom: insets.bottom + 40 }} style={styles.container}>
-      <View style={styles.card}>
-        <Text style={styles.activeText}>🟢 Active Visit: {clientName}</Text>
+    <View style={styles.container}>
+      <View style={[styles.header, { paddingTop: insets.top + 20 }]}>
+        <Text style={styles.headerTitle}>Active Visit</Text>
+        <Text style={styles.headerSub}>{clientName}</Text>
+      </View>
 
-        <Text style={styles.label}>Competitor Brands on Shelf:</Text>
-        <View style={{flexDirection: 'row', flexWrap: 'wrap', marginBottom: 15}}>
-          {['Brand X', 'Brand Y', 'Local Brand', 'None'].map(brand => (
-            <TouchableOpacity key={brand} onPress={() => setCompetitors(competitors.includes(brand) ? competitors.replace(brand+', ', '') : competitors + brand + ', ')} style={{backgroundColor: competitors.includes(brand) ? '#1976D2' : '#ddd', padding: 10, borderRadius: 20, margin: 5}}>
-              <Text style={{color: competitors.includes(brand) ? 'white' : 'black'}}>{brand}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
+      <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 100 }}>
         {!outcome ? (
-          <View style={{marginTop: 20}}>
-            <TouchableOpacity style={styles.orderBtn} onPress={() => { setOutcome('order'); navigation.navigate('ProductCatalog', {clientName}); }}>
-              <Text style={styles.btnText}>TAKE ORDER / QUOTE</Text>
+          <View style={styles.actionCard}>
+            <Text style={styles.label}>What is the outcome of this visit?</Text>
+            
+            <TouchableOpacity style={styles.orderBtn} onPress={handleTakeOrder}>
+              <View style={styles.btnIconBox}><MaterialCommunityIcons name="cart-plus" size={24} color="#1976D2" /></View>
+              <Text style={styles.orderBtnText}>Take Sales Order</Text>
+              <MaterialCommunityIcons name="chevron-right" size={24} color="#1976D2" />
             </TouchableOpacity>
-            <Text style={{textAlign: 'center', marginVertical: 10}}>--- OR ---</Text>
+
+            <View style={styles.divider}>
+              <View style={styles.line} />
+              <Text style={styles.orText}>OR</Text>
+              <View style={styles.line} />
+            </View>
+
             <TouchableOpacity style={styles.noOrderBtn} onPress={() => setOutcome('no_order')}>
-              <Text style={[styles.btnText, {color: '#D32F2F'}]}>FLAG NO ORDER</Text>
+              <View style={[styles.btnIconBox, {backgroundColor: '#ffebee'}]}><MaterialCommunityIcons name="flag-variant" size={24} color="#D32F2F" /></View>
+              <Text style={styles.noOrderBtnText}>Flag No Order</Text>
+              <MaterialCommunityIcons name="chevron-right" size={24} color="#D32F2F" />
             </TouchableOpacity>
           </View>
         ) : (
           <View style={styles.lockedBox}>
-            <Text style={styles.lockedText}>{outcome === 'order' ? "✅ Order Mode Selected" : "❌ No Order Mode Selected"}</Text>
-            <TouchableOpacity onPress={() => setOutcome(null)}>
-              <Text style={{color: 'blue', marginTop: 10, textAlign: 'center'}}>Change Mind (Reset)</Text>
-            </TouchableOpacity>
+            <MaterialCommunityIcons name={outcome === 'order_taken' ? "check-decagram" : "flag"} size={40} color={outcome === 'order_taken' ? "#4CAF50" : "#D32F2F"} />
+            <Text style={[styles.lockedText, {color: outcome === 'order_taken' ? "#2e7d32" : "#c62828"}]}>
+              {outcome === 'order_taken' ? "Order Placed Successfully" : "No Order Flagged"}
+            </Text>
+            {outcome !== 'order_taken' && (
+              <TouchableOpacity onPress={() => setOutcome(null)} style={{marginTop: 15, backgroundColor:'white', paddingHorizontal: 15, paddingVertical: 8, borderRadius: 20}}>
+                <Text style={{color: '#D32F2F', fontWeight: 'bold'}}>Change Outcome</Text>
+              </TouchableOpacity>
+            )}
           </View>
         )}
 
         {outcome === 'no_order' && (
           <View style={styles.noOrderBox}>
-            <Text style={styles.label}>Reason for No Order:</Text>
-            <TextInput style={styles.input} placeholder="e.g., Shop Closed, Boss Absent..." value={reason} onChangeText={setReason} />
-            <TouchableOpacity style={[styles.cameraBtn, photoUri && {backgroundColor: '#4CAF50'}]} onPress={openCamera}>
-              <Text style={styles.btnText}>{photoUri ? "Evidence Captured" : "Take Evidence Photo"}</Text>
+            <Text style={styles.label}>Reason for No Order</Text>
+            <View style={styles.inputWrapper}>
+              <MaterialCommunityIcons name="text-box-edit-outline" size={20} color="gray" style={{marginRight: 10}} />
+              <TextInput style={styles.input} placeholder="E.g., Shop Closed, Boss Absent..." value={reason} onChangeText={setReason} />
+            </View>
+
+            <Text style={[styles.label, {marginTop: 15}]}>Evidence Photo</Text>
+            <TouchableOpacity style={styles.cameraBtn} onPress={openCamera}>
+              {photoUri ? (
+                <Image source={{uri: photoUri}} style={{width: '100%', height: 150, borderRadius: 12}} />
+              ) : (
+                <View style={{alignItems: 'center', padding: 20}}>
+                  <MaterialCommunityIcons name="camera-plus" size={40} color="#f57c00" />
+                  <Text style={{color: '#f57c00', fontWeight: 'bold', marginTop: 10}}>Capture Evidence</Text>
+                </View>
+              )}
             </TouchableOpacity>
-            {photoUri && <Image source={{uri: photoUri}} style={{width: '100%', height: 200, borderRadius: 8, marginTop: 15}} />}
           </View>
         )}
+      </ScrollView>
 
-        <TouchableOpacity style={styles.checkoutBtn} onPress={endVisit}>
-          <Text style={styles.btnText}>CHECKOUT & COMPLETE VISIT</Text>
-        </TouchableOpacity>
-      </View>
-    </ScrollView>
+      {outcome && (
+        <View style={styles.bottomBar}>
+          <TouchableOpacity style={styles.checkoutBtn} onPress={endVisit}>
+            <Text style={styles.checkoutBtnText}>Checkout & Complete Visit</Text>
+            <MaterialCommunityIcons name="check-all" size={24} color="white" />
+          </TouchableOpacity>
+        </View>
+      )}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
-  container: { flex: 1, backgroundColor: '#f4f4f4' },
-  card: { backgroundColor: 'white', padding: 20, borderRadius: 10, elevation: 3 },
-  title: { fontSize: 22, fontWeight: 'bold', marginBottom: 20 },
-  activeText: { color: '#4CAF50', fontWeight: 'bold', marginBottom: 15, textAlign: 'center', fontSize: 16 },
-  label: { fontWeight: 'bold', marginBottom: 5 },
-  input: { backgroundColor: '#f9f9f9', borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 10, marginBottom: 15 },
-  startBtn: { backgroundColor: '#4CAF50', padding: 20, borderRadius: 8, width: '100%', alignItems: 'center' },
-  orderBtn: { backgroundColor: '#1976D2', padding: 15, borderRadius: 8, alignItems: 'center' },
-  noOrderBtn: { backgroundColor: '#f0f0f0', padding: 15, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#D32F2F' },
-  lockedBox: { backgroundColor: '#e3f2fd', padding: 15, borderRadius: 8, alignItems: 'center', marginVertical: 20 },
-  lockedText: { fontWeight: 'bold', fontSize: 16 },
-  noOrderBox: { backgroundColor: '#FFF3E0', padding: 15, borderRadius: 8, marginTop: 10 },
-  cameraBtn: { backgroundColor: '#FF9800', padding: 10, borderRadius: 8, alignItems: 'center' },
-  checkoutBtn: { backgroundColor: '#D32F2F', padding: 15, borderRadius: 8, alignItems: 'center', marginTop: 30 },
-  btnText: { color: 'white', fontWeight: 'bold' }
+  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20, backgroundColor: '#f9f9f9' },
+  iconCircle: { width: 120, height: 120, backgroundColor: '#ffebee', borderRadius: 60, justifyContent: 'center', alignItems: 'center', marginBottom: 20, elevation: 5 },
+  container: { flex: 1, backgroundColor: '#f9f9f9' },
+  header: { backgroundColor: '#D32F2F', padding: 25, borderBottomLeftRadius: 25, borderBottomRightRadius: 25, elevation: 5 },
+  headerTitle: { fontSize: 14, color: '#ffcdd2', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: 1 },
+  headerSub: { fontSize: 26, fontWeight: 'bold', color: 'white', marginTop: 5 },
+  title: { fontSize: 28, fontWeight: 'bold', color: '#333', textAlign: 'center' },
+  startBtn: { flexDirection: 'row', backgroundColor: '#D32F2F', padding: 18, borderRadius: 30, width: '90%', alignItems: 'center', justifyContent: 'center', elevation: 5 },
+  actionCard: { backgroundColor: 'white', padding: 25, borderRadius: 20, elevation: 2 },
+  label: { fontWeight: 'bold', fontSize: 16, color: '#333', marginBottom: 15 },
+  orderBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#e3f2fd', padding: 15, borderRadius: 15 },
+  btnIconBox: { width: 45, height: 45, backgroundColor: 'white', borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginRight: 15 },
+  orderBtnText: { flex: 1, color: '#1976D2', fontWeight: 'bold', fontSize: 16 },
+  divider: { flexDirection: 'row', alignItems: 'center', marginVertical: 20 },
+  line: { flex: 1, height: 1, backgroundColor: '#eee' },
+  orText: { marginHorizontal: 15, color: '#aaa', fontWeight: 'bold' },
+  noOrderBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', padding: 15, borderRadius: 15, borderWidth: 1, borderColor: '#ffcdd2' },
+  noOrderBtnText: { flex: 1, color: '#D32F2F', fontWeight: 'bold', fontSize: 16 },
+  lockedBox: { backgroundColor: '#e8f5e9', padding: 30, borderRadius: 20, alignItems: 'center', marginVertical: 10, elevation: 2 },
+  lockedText: { fontWeight: 'bold', fontSize: 18, marginTop: 15 },
+  noOrderBox: { backgroundColor: 'white', padding: 25, borderRadius: 20, marginTop: 15, elevation: 2 },
+  inputWrapper: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f5f5f5', borderRadius: 12, paddingHorizontal: 15, height: 55 },
+  input: { flex: 1, fontSize: 15 },
+  cameraBtn: { backgroundColor: '#fff3e0', borderRadius: 15, borderWidth: 2, borderColor: '#ffb74d', borderStyle: 'dashed' },
+  bottomBar: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'white', padding: 20, borderTopWidth: 1, borderColor: '#eee', elevation: 15 },
+  checkoutBtn: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', backgroundColor: '#333', paddingVertical: 15, borderRadius: 30 },
+  checkoutBtnText: { color: 'white', fontWeight: 'bold', fontSize: 18, marginRight: 10 },
+  btnText: { color: 'white', fontWeight: 'bold', fontSize: 16 }
 });

@@ -1,79 +1,48 @@
-﻿import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, ScrollView } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { syncAllDataToERP } from '../api';
+import { syncAllDataToERP, pullMasterData } from '../api';
 
 export default function SyncScreen() {
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [lastSync, setLastSync] = useState('Never Synced');
-  const [logs, setLogs] = useState('');
+  const [isPushing, setIsPushing] = useState(false);
+  const [isPulling, setIsPulling] = useState(false);
 
-  useEffect(() => { loadLastSyncTime(); }, []);
-
-  const loadLastSyncTime = async () => {
-    const time = await AsyncStorage.getItem('lastSyncTime');
-    if (time) setLastSync(new Date(parseInt(time)).toLocaleString());
+  const handlePush = async () => {
+    setIsPushing(true);
+    // You would loop through your AsyncStorage queues here and call pushLiveOrder / pushLiveVisit
+    const result = await syncAllDataToERP(); 
+    setIsPushing(false);
+    if (result && result.success) Alert.alert("Sync Complete", "Queued data pushed to ERPNext.");
+    else Alert.alert("Sync Failed", "Check connection and Error Logs.");
   };
 
-  const handleSync = async () => {
-    setIsSyncing(true);
-    setLogs("Starting sync process...\n");
-    
-    try {
-      const result = await syncAllDataToERP();
-      
-      if (result && result.success) {
-        const now = Date.now();
-        await AsyncStorage.setItem('lastSyncTime', now.toString());
-        setLastSync(new Date(now).toLocaleString());
-        
-        let msg = `Sync Complete!\nClients: ${result.log.clients}\nVisits: ${result.log.visits}\nOrders: ${result.log.orders}\n`;
-        if (result.log.errors.length > 0) {
-          msg += `\nErrors:\n${result.log.errors.join('\n')}`;
-        }
-        setLogs(msg);
-        Alert.alert("Sync Finished", "Check logs below for details.");
-      } else {
-        Alert.alert("Sync Failed", result?.error || "Unknown Error");
-        setLogs(`Critical Error: ${result?.error || "Unknown Error"}`);
-      }
-    } catch (e) {
-      Alert.alert("Crash", "The sync engine encountered a critical error.");
-      setLogs(`System Crash: ${e.message}`);
-    } finally {
-      // THIS GUARANTEES THE SPINNER ALWAYS STOPS
-      setIsSyncing(false);
-    }
+  const handlePull = async () => {
+    setIsPulling(true);
+    const result = await pullMasterData();
+    setIsPulling(false);
+    if (result && result.success) Alert.alert("Data Updated", "Latest Customers/Leads and Prices pulled from ERPNext.");
+    else Alert.alert("Pull Failed", "Could not reach server.");
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.statusCard}>
-        <MaterialCommunityIcons name="cloud-sync" size={60} color="#1976D2" />
-        <Text style={styles.statusTitle}>Real-Time Sync Engine</Text>
-        <Text style={styles.lastSync}>Last Sync: {lastSync}</Text>
-      </View>
-
-      <TouchableOpacity style={[styles.syncBtn, isSyncing && {backgroundColor:'gray'}]} onPress={handleSync} disabled={isSyncing}>
-        {isSyncing ? <ActivityIndicator color="white" /> : <Text style={styles.syncBtnText}>PUSH TO ERPNEXT NOW</Text>}
+    <View style={styles.container}>
+      <MaterialCommunityIcons name="cloud-sync" size={80} color="#1976D2" />
+      <Text style={{fontSize: 24, fontWeight: 'bold', marginBottom: 30, marginTop: 10}}>Data Sync Engine</Text>
+      
+      <TouchableOpacity style={styles.btnPush} onPress={handlePush} disabled={isPushing || isPulling}>
+        {isPushing ? <ActivityIndicator color="white" /> : <Text style={styles.btnText}>PUSH LOCAL DATA TO ERP</Text>}
       </TouchableOpacity>
-
-      <ScrollView style={styles.logBox}>
-        <Text style={{fontWeight:'bold'}}>Sync Logs:</Text>
-        <Text style={{color: '#555', marginTop: 5}}>{logs}</Text>
-      </ScrollView>
-    </SafeAreaView>
+      
+      <TouchableOpacity style={styles.btnPull} onPress={handlePull} disabled={isPushing || isPulling}>
+        {isPulling ? <ActivityIndicator color="white" /> : <Text style={styles.btnText}>PULL MASTER DATA (Refresh)</Text>}
+      </TouchableOpacity>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f4f4f4', padding: 20 },
-  statusCard: { alignItems: 'center', backgroundColor: 'white', padding: 30, borderRadius: 10, elevation: 3, marginBottom: 30, marginTop: 20 },
-  statusTitle: { fontSize: 20, fontWeight: 'bold', marginTop: 15 },
-  lastSync: { color: 'gray', marginTop: 10, fontWeight: 'bold' },
-  syncBtn: { backgroundColor: '#D32F2F', padding: 18, borderRadius: 10, alignItems: 'center' },
-  syncBtnText: { color: 'white', fontSize: 18, fontWeight: 'bold' },
-  logBox: { marginTop: 20, backgroundColor: '#e0e0e0', padding: 15, borderRadius: 8, flex: 1 }
+  container: { flex: 1, backgroundColor: '#f4f4f4', padding: 20, alignItems: 'center', justifyContent: 'center' },
+  btnPush: { backgroundColor: '#D32F2F', padding: 20, borderRadius: 10, width: '100%', alignItems: 'center', marginBottom: 20 },
+  btnPull: { backgroundColor: '#1976D2', padding: 20, borderRadius: 10, width: '100%', alignItems: 'center' },
+  btnText: { color: 'white', fontSize: 16, fontWeight: 'bold' }
 });

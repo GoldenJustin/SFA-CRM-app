@@ -1,12 +1,12 @@
-﻿import React, { useState } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Alert, Image } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Alert, Image, ActivityIndicator } from 'react-native';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { authFetch } from '../api';
 
 export default function NewLeadScreen({ navigation }) {
-  const insets = useSafeAreaInsets();
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [businessType, setBusinessType] = useState('Retail Shop');
@@ -14,7 +14,8 @@ export default function NewLeadScreen({ navigation }) {
   const [ownerPhone, setOwnerPhone] = useState('');
   const [notes, setNotes] = useState('');
   const [location, setLocation] = useState(null);
-  const [photoUri, setPhotoUri] = useState(null);
+  const [photos, setPhotos] = useState([]);
+  const [isRegistering, setIsRegistering] = useState(false);
 
   const businessTypes = ['Retail Shop', 'Wholesale', 'Supermarket', 'Kiosk', 'Pharmacy'];
   const roles = ['Owner', 'Manager', 'Employee'];
@@ -22,100 +23,157 @@ export default function NewLeadScreen({ navigation }) {
   const getRealGPS = async () => {
     let { status } = await Location.requestForegroundPermissionsAsync();
     if (status !== 'granted') return Alert.alert('Error', 'GPS Permission Denied');
-    let loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+    let loc = await Location.getLastKnownPositionAsync({});
+    if(!loc) loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Lowest });
     setLocation(loc.coords);
   };
 
   const openCamera = async () => {
-    let result = await ImagePicker.launchCameraAsync({ quality: 0.5 });
-    if (!result.canceled) setPhotoUri(result.assets[0].uri);
+    let result = await ImagePicker.launchCameraAsync({ quality: 0.3, base64: true });
+    if (!result.canceled) {
+      setPhotos(prev => [...prev, { uri: result.assets[0].uri, base64: result.assets[0].base64 }]);
+    }
+  };
+
+  const removePhoto = (index) => {
+    setPhotos(prev => prev.filter((_, i) => i !== index));
   };
 
   const saveClient = async () => {
-    if (!name || !phone || !location) return Alert.alert("Error", "Name, Phone, and GPS are mandatory!");
-    if (contactRole !== 'Owner' && !ownerPhone) return Alert.alert("Error", "Owner's Phone is required.");
+    if (!name || !phone || !location || photos.length === 0) return Alert.alert("Required", "Name, Phone, GPS, and at least 1 Photo are required.");
+    if (contactRole !== 'Owner' && !ownerPhone) return Alert.alert("Required", "Owner's Phone is required.");
 
-    const newClient = {
-      id: Date.now().toString(),
-      name, phone, businessType, contactRole, ownerPhone, notes,
-      lat: location.latitude, lng: location.longitude,
-      photo: photoUri, status: 'Pending Sync', createdAt: new Date().toISOString()
+    setIsRegistering(true);
+    const payload = { 
+        name, phone, lat: location.latitude, lng: location.longitude, 
+        businessType, contactRole, ownerPhone, notes, 
+        photosBase64: photos.map(p => p.base64) 
     };
 
-    try {
-      const existing = await AsyncStorage.getItem('offlineClients');
-      const clientsArray = existing ? JSON.parse(existing) : [];
-      clientsArray.push(newClient);
-      await AsyncStorage.setItem('offlineClients', JSON.stringify(clientsArray));
-      Alert.alert("Success", "Detailed KYC Saved Offline!");
+    const res = await authFetch('/api/method/sfa_crm.api.sync_client', 'POST', { payload: JSON.stringify(payload) });
+
+    if (res.message && res.message.success) {
+      let existing = await AsyncStorage.getItem('offlineClients');
+      let clients = existing ? JSON.parse(existing) : [];
+      clients.unshift({ id: res.message.name, name: name, lat: location.latitude, lng: location.longitude, status: 'Synced' });
+      await AsyncStorage.setItem('offlineClients', JSON.stringify(clients));
+      setIsRegistering(false);
+      Alert.alert("Success", "Client KYC Saved & Synced!");
       navigation.goBack();
-    } catch (e) { Alert.alert("Error", "Save failed."); }
+    } else {
+      setIsRegistering(false);
+      Alert.alert("Error", res.message?.error || "Could not register client.");
+    }
   };
 
   return (
-    <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + 40 }} style={styles.container}>
-      <Text style={styles.header}>Deep Client KYC</Text>
-      
-      <Text style={styles.label}>Business Name</Text>
-      <TextInput style={styles.input} placeholder="Enter name" value={name} onChangeText={setName} />
-      
-      <Text style={styles.label}>Business Type</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipContainer}>
-        {businessTypes.map(type => (
-          <TouchableOpacity key={type} style={[styles.chip, businessType === type && styles.chipActive]} onPress={() => setBusinessType(type)}>
-            <Text style={{color: businessType === type ? 'white' : 'black'}}>{type}</Text>
+    <View style={styles.container}>
+      <View style={styles.headerArea}>
+        <Text style={styles.headerTitle}>New Client KYC</Text>
+        <Text style={styles.headerSub}>Fill in client details accurately</Text>
+      </View>
+      <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 100 }}>
+        
+        <View style={styles.card}>
+          <Text style={styles.label}>Business Information</Text>
+          <View style={styles.inputWrapper}>
+            <MaterialCommunityIcons name="storefront" size={20} color="#888" style={styles.inputIcon} />
+            <TextInput style={styles.input} placeholder="Business Name" value={name} onChangeText={setName} />
+          </View>
+          
+          <View style={styles.inputWrapper}>
+            <MaterialCommunityIcons name="phone" size={20} color="#888" style={styles.inputIcon} />
+            <TextInput style={styles.input} placeholder="Phone Number (07...)" keyboardType="phone-pad" value={phone} onChangeText={setPhone} />
+          </View>
+
+          <Text style={styles.subLabel}>Business Type</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom: 10}}>
+            {businessTypes.map(type => (
+              <TouchableOpacity key={type} style={[styles.chip, businessType === type && styles.chipActive]} onPress={() => setBusinessType(type)}>
+                <Text style={{color: businessType === type ? 'white' : '#555', fontWeight:'500'}}>{type}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.label}>Contact Person</Text>
+          <View style={styles.rowChips}>
+            {roles.map(role => (
+              <TouchableOpacity key={role} style={[styles.chip, contactRole === role && styles.chipActive]} onPress={() => setContactRole(role)}>
+                <Text style={{color: contactRole === role ? 'white' : '#555', fontWeight:'500'}}>{role}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          {contactRole !== 'Owner' && (
+            <View style={[styles.inputWrapper, {borderColor: '#D32F2F', borderWidth: 1}]}>
+              <MaterialCommunityIcons name="phone-alert" size={20} color="#D32F2F" style={styles.inputIcon} />
+              <TextInput style={styles.input} placeholder="Actual Owner's Phone *" keyboardType="phone-pad" value={ownerPhone} onChangeText={setOwnerPhone} />
+            </View>
+          )}
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.label}>Location & Evidence</Text>
+          <TouchableOpacity style={[styles.gpsBtn, location && {backgroundColor: '#e8f5e9', borderColor: '#4CAF50'}]} onPress={getRealGPS}>
+            <MaterialCommunityIcons name={location ? "check-circle" : "map-marker-radius"} size={24} color={location ? "#4CAF50" : "#D32F2F"} style={{marginRight: 10}}/>
+            <Text style={{color: location ? "#4CAF50" : "#D32F2F", fontWeight: 'bold', fontSize: 16}}>
+              {location ? "GPS Captured Successfully" : "Tap to Capture GPS"}
+            </Text>
           </TouchableOpacity>
-        ))}
+
+          <Text style={styles.subLabel}>Photos (First is Storefront)</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{flexDirection: 'row', marginTop: 5}}>
+            <TouchableOpacity style={styles.addPhotoBox} onPress={openCamera}>
+              <MaterialCommunityIcons name="camera-plus" size={35} color="#D32F2F" />
+              <Text style={{color: '#D32F2F', fontSize: 10, marginTop: 5, fontWeight:'bold'}}>Add Photo</Text>
+            </TouchableOpacity>
+            {photos.map((p, idx) => (
+              <View key={idx} style={styles.imgWrapper}>
+                <Image source={{uri: p.uri}} style={styles.imgThumb} />
+                <View style={styles.imgBadge}><Text style={{color:'white', fontSize: 8, fontWeight:'bold'}}>{idx === 0 ? "STOREFRONT" : "EXTRA"}</Text></View>
+                <TouchableOpacity style={styles.removeImgBtn} onPress={() => removePhoto(idx)}>
+                  <MaterialCommunityIcons name="close-circle" size={20} color="red" />
+                </TouchableOpacity>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+
       </ScrollView>
 
-      <Text style={styles.label}>Current Contact Role</Text>
-      <View style={{flexDirection: 'row', marginBottom: 15}}>
-        {roles.map(role => (
-          <TouchableOpacity key={role} style={[styles.chip, contactRole === role && styles.chipActive]} onPress={() => setContactRole(role)}>
-            <Text style={{color: contactRole === role ? 'white' : 'black'}}>{role}</Text>
-          </TouchableOpacity>
-        ))}
+      {/* Sticky Bottom Bar */}
+      <View style={styles.bottomBar}>
+        <TouchableOpacity style={[styles.saveBtn, isRegistering && {backgroundColor: '#999'}]} onPress={saveClient} disabled={isRegistering}>
+          {isRegistering ? <ActivityIndicator color="white" /> : <Text style={styles.saveBtnText}>Register KYC Client</Text>}
+        </TouchableOpacity>
       </View>
-
-      <Text style={styles.label}>Contact Phone</Text>
-      <TextInput style={styles.input} placeholder="Phone" keyboardType="phone-pad" value={phone} onChangeText={setPhone} />
-
-      {contactRole !== 'Owner' && (
-        <View>
-          <Text style={[styles.label, {color: '#D32F2F'}]}>Actual Owner's Phone (Mandatory)</Text>
-          <TextInput style={styles.input} placeholder="Owner's Phone" keyboardType="phone-pad" value={ownerPhone} onChangeText={setOwnerPhone} />
-        </View>
-      )}
-
-      <Text style={styles.label}>General Observations / Notes</Text>
-      <TextInput style={[styles.input, {height: 80}]} multiline placeholder="E.g., Shop is very busy..." value={notes} onChangeText={setNotes} />
-
-      <TouchableOpacity style={[styles.gpsBtn, location && {backgroundColor: '#4CAF50'}]} onPress={getRealGPS}>
-        <Text style={styles.btnText}>{location ? `✅ GPS: ${location.latitude.toFixed(4)}, ${location.longitude.toFixed(4)}` : "📍 Capture Real GPS"}</Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity style={styles.photoBtn} onPress={openCamera}>
-        <Text style={styles.btnText}>{photoUri ? "✅ Storefront Captured" : "📸 Capture Storefront"}</Text>
-      </TouchableOpacity>
-      {photoUri && <Image source={{uri: photoUri}} style={{width: 100, height: 100, borderRadius: 8, marginBottom: 20}} />}
-
-      <TouchableOpacity style={styles.saveBtn} onPress={saveClient}>
-        <Text style={styles.btnText}>Register Detailed KYC</Text>
-      </TouchableOpacity>
-    </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f4f4f4' },
-  header: { fontSize: 22, fontWeight: 'bold', marginBottom: 15, color: '#D32F2F' },
-  label: { fontSize: 14, fontWeight: 'bold', marginBottom: 5, color: '#333' },
-  input: { backgroundColor: 'white', borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12, marginBottom: 15 },
-  chipContainer: { flexDirection: 'row', marginBottom: 15 },
-  chip: { backgroundColor: '#ddd', paddingHorizontal: 15, paddingVertical: 8, borderRadius: 20, marginRight: 10 },
-  chipActive: { backgroundColor: '#1976D2' },
-  gpsBtn: { backgroundColor: '#1976D2', padding: 15, borderRadius: 8, alignItems: 'center', marginBottom: 10 },
-  photoBtn: { backgroundColor: '#FF9800', padding: 15, borderRadius: 8, alignItems: 'center', marginBottom: 20 },
-  saveBtn: { backgroundColor: '#D32F2F', padding: 15, borderRadius: 8, alignItems: 'center', marginTop: 10 },
-  btnText: { color: 'white', fontWeight: 'bold' }
+  container: { flex: 1, backgroundColor: '#f2f2f2' },
+  headerArea: { backgroundColor: '#D32F2F', padding: 25, paddingTop: 40, borderBottomLeftRadius: 20, borderBottomRightRadius: 20 },
+  headerTitle: { color: 'white', fontSize: 24, fontWeight: 'bold' },
+  headerSub: { color: '#ffcdd2', fontSize: 14, marginTop: 5 },
+  card: { backgroundColor: 'white', padding: 20, borderRadius: 15, marginBottom: 15, elevation: 1 },
+  label: { fontSize: 16, fontWeight: 'bold', color: '#333', marginBottom: 15 },
+  subLabel: { fontSize: 13, fontWeight: 'bold', color: '#777', marginBottom: 10 },
+  inputWrapper: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f9f9f9', borderRadius: 10, paddingHorizontal: 15, height: 50, marginBottom: 15 },
+  inputIcon: { marginRight: 10 },
+  input: { flex: 1, fontSize: 15, color: '#333' },
+  chipContainer: { flexDirection: 'row' },
+  rowChips: { flexDirection: 'row', marginBottom: 15 },
+  chip: { backgroundColor: '#f0f0f0', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, marginRight: 10 },
+  chipActive: { backgroundColor: '#D32F2F' },
+  gpsBtn: { flexDirection:'row', backgroundColor: '#ffebee', borderWidth: 1, borderColor: '#D32F2F', padding: 15, borderRadius: 10, alignItems: 'center', justifyContent:'center', marginBottom: 20 },
+  addPhotoBox: { width: 100, height: 100, borderRadius: 12, borderWidth: 2, borderColor: '#D32F2F', borderStyle: 'dashed', justifyContent: 'center', alignItems: 'center', backgroundColor: '#ffebee', marginRight: 10 },
+  imgWrapper: { position: 'relative', marginRight: 10 },
+  imgThumb: { width: 100, height: 100, borderRadius: 12 },
+  imgBadge: { position: 'absolute', bottom: 5, left: 5, backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 5 },
+  removeImgBtn: { position: 'absolute', top: -5, right: -5, backgroundColor: 'white', borderRadius: 10 },
+  bottomBar: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'white', padding: 15, elevation: 10, borderTopWidth: 1, borderColor: '#eee' },
+  saveBtn: { backgroundColor: '#D32F2F', padding: 15, borderRadius: 12, alignItems: 'center' },
+  saveBtnText: { color: 'white', fontWeight: 'bold', fontSize: 18 }
 });
