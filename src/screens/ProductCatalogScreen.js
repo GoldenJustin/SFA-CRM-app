@@ -1,17 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, TextInput } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, TextInput, ActivityIndicator } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { pushLiveOrder } from '../api';
+import { pushLiveOrder, pushLiveVisit } from '../api';
 
 export default function ProductCatalogScreen({ navigation, route }) {
   const insets = useSafeAreaInsets();
-  const { clientName } = route.params || { clientName: "Unknown" };
+  const { clientName, visitStartTime, activeLat, activeLng } = route.params || { clientName: "Unknown" };
+  
   const [orderType, setOrderType] = useState('Sales Order');
   const [searchQuery, setSearchQuery] = useState('');
   const [cart, setCart] = useState({});
   const [products, setProducts] = useState([]);
+  const [isCheckingOut, setIsCheckingOut] = useState(false);
 
   useEffect(() => {
     const loadRealItems = async () => {
@@ -41,19 +43,82 @@ export default function ProductCatalogScreen({ navigation, route }) {
     const cartItems = Object.values(cart);
     if (cartItems.length === 0) return Alert.alert("Empty Cart", "Add items first.");
     
+    setIsCheckingOut(true);
+
+    // 1. Prepare Order Data
     const total = cartItems.reduce((sum, i) => sum + ((Number(i.price)||0) * i.qty), 0);
-    const newOrder = { id: Date.now().toString(), clientName, total, type: orderType, date: new Date().toISOString(), items: cartItems, status: 'Pending Sync' };
-    
-    const livePush = await pushLiveOrder(newOrder);
-    if (livePush.success) { newOrder.status = 'Synced'; newOrder.erpName = livePush.erpName; }
-    
-    let existing = await AsyncStorage.getItem('offlineOrders');
-    let ordersArray = existing ? JSON.parse(existing) : [];
+    const newOrder = { 
+      id: Date.now().toString(), 
+      clientName, 
+      total, 
+      type: orderType, 
+      date: new Date().toISOString(), 
+      items: cartItems, 
+      status: 'Pending Sync' 
+    };
+
+    // --- LIVE SYNC: Try to push order immediately ---
+    const orderPush = await pushLiveOrder(newOrder);
+    if (orderPush && orderPush.success) {
+      newOrder.status = 'Synced';
+      newOrder.erpName = orderPush.erpName;
+    }
+
+    // Save Order Offline
+    let existingOrders = await AsyncStorage.getItem('offlineOrders');
+    let ordersArray = existingOrders ? JSON.parse(existingOrders) : [];
     ordersArray.unshift(newOrder);
     await AsyncStorage.setItem('offlineOrders', JSON.stringify(ordersArray));
 
-    // Route back to the Visit screen so they can press 'Complete Visit'
-    navigation.navigate('VisitCheckIn', { orderPlaced: true, clientName });
+    // 2. AUTO-CHECKOUT VISIT LOGIC
+    if (visitStartTime) {
+      const visitRecord = {
+        customer: clientName,
+        start_time: new Date(visitStartTime).toISOString().replace('T', ' ').substring(0, 19), 
+        end_time: new Date().toISOString().replace('T', ' ').substring(0, 19),
+        outcome: 'Order Taken',
+        no_order_reason: '', 
+        photoBase64: null,
+        lat: parseFloat(activeLat), 
+        lng: parseFloat(activeLng), 
+        status: 'Pending Sync'
+      };
+
+      // --- LIVE SYNC: Try to push visit immediately ---
+      const visitPush = await pushLiveVisit(visitRecord);
+      if (visitPush && visitPush.success) {
+        visitRecord.status = 'Synced';
+        visitRecord.erpName = visitPush.erpName;
+      }
+
+      // Save Visit Offline
+      const existingVisits = await AsyncStorage.getItem('offlineVisits');
+      const visitsArray = existingVisits ? JSON.parse(existingVisits) : [];
+      visitsArray.push(visitRecord);
+      await AsyncStorage.setItem('offlineVisits', JSON.stringify(visitsArray));
+
+      // Clear active visit markers
+      await AsyncStorage.removeItem('activeLat');
+      await AsyncStorage.removeItem('activeLng');
+    }
+
+    setIsCheckingOut(false);
+
+    // 3. Notification & Navigation to Customer Dashboard
+    Alert.alert(
+      "Visit Completed \u2705", 
+      "Order saved and customer successfully checked out.", 
+      [
+        { 
+          text: "OK", 
+          onPress: () => {
+            // Safely clear the stack and return to the main tab
+            navigation.popToTop();
+            navigation.navigate('Clients'); 
+          }
+        }
+      ]
+    );
   };
 
   const totalValue = Object.values(cart).reduce((s, i) => s + ((Number(i.price)||0) * i.qty), 0);
@@ -112,14 +177,21 @@ export default function ProductCatalogScreen({ navigation, route }) {
       />
 
       {totalValue > 0 && (
-        <View style={styles.bottomCart}>
+        <View style={[styles.bottomCart, { paddingBottom: insets.bottom > 0 ? insets.bottom : 10 }]}>
           <View>
             <Text style={styles.cartLabel}>Total ({Object.keys(cart).length} Items)</Text>
             <Text style={styles.cartValue}>Tsh {totalValue.toLocaleString()}</Text>
           </View>
-          <TouchableOpacity style={styles.checkoutBtn} onPress={handleCheckout}>
-            <Text style={styles.checkoutText}>Checkout</Text>
-            <MaterialCommunityIcons name="chevron-right" size={22} color="white" />
+          
+          <TouchableOpacity style={styles.checkoutBtn} onPress={handleCheckout} disabled={isCheckingOut}>
+            {isCheckingOut ? (
+              <ActivityIndicator color="white" />
+            ) : (
+              <>
+                <Text style={styles.checkoutText}>Complete Visit</Text>
+                <MaterialCommunityIcons name="chevron-right" size={22} color="white" />
+              </>
+            )}
           </TouchableOpacity>
         </View>
       )}
@@ -150,9 +222,9 @@ const styles = StyleSheet.create({
   stepBtn: { padding: 5 },
   stepText: { fontSize: 16, fontWeight: 'bold', color: '#333' },
   qtyText: { fontSize: 14, fontWeight: 'bold', color: '#D32F2F' },
-  bottomCart: { position: 'absolute', bottom: 15, left: 15, right: 15, backgroundColor: '#212121', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 15, elevation: 15 },
+  bottomCart: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#212121', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 12, borderTopLeftRadius: 15, borderTopRightRadius: 15, elevation: 15 },
   cartLabel: { color: '#aaa', fontSize: 12, fontWeight:'bold' },
   cartValue: { color: 'white', fontSize: 18, fontWeight: 'bold' },
-  checkoutBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#4CAF50', paddingHorizontal: 15, paddingVertical: 8, borderRadius: 20 },
+  checkoutBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#4CAF50', paddingHorizontal: 15, paddingVertical: 10, borderRadius: 20 },
   checkoutText: { color: 'white', fontWeight: 'bold', fontSize: 14, marginRight: 2 }
 });

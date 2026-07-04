@@ -23,7 +23,7 @@ export const loginToERP = async (email, password) => {
       }
       await AsyncStorage.setItem('erp_sid', sid);
       await AsyncStorage.setItem('erp_user', data.full_name);
-      await AsyncStorage.setItem('erp_url', baseUrl); // Store base url for images
+      await AsyncStorage.setItem('erp_url', baseUrl);
       return { success: true, user: data.full_name };
     } else { return { success: false, error: data.message || 'Invalid Credentials' }; }
   } catch (error) { return { success: false, error: 'Cannot reach server.' }; }
@@ -35,25 +35,34 @@ export const authFetch = async (endpoint, method = 'GET', body = null) => {
   const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json', 'Cookie': `sid=${sid}` };
   const config = { method, headers };
   if (body) config.body = JSON.stringify(body);
+  
+  console.log(`\n============== [API REQUEST] ==============`);
+  console.log(`${method} ${endpoint}`);
+  
   try {
     const response = await fetch(`${baseUrl}${endpoint}`, config);
     const text = await response.text();
     return JSON.parse(text);
-  } catch (e) { return { success: false, error: e.message }; }
+  } catch (e) { 
+    console.log(`[NETWORK ERROR]:`, e.message);
+    return { success: false, error: e.message }; 
+  }
 };
 
-export const uploadFileToERP = async (base64String, doctype, docname, fieldname = null) => {
+export const pushLiveClient = async (clientData) => {
   try {
     const payload = {
-      filename: `storefront_${Date.now()}.jpg`,
-      filedata: `data:image/jpeg;base64,${base64String}`,
-      doctype: doctype,
-      docname: docname
+      name: clientData.name, phone: clientData.phone,
+      lat: clientData.lat, lng: clientData.lng,
+      businessType: clientData.businessType,
+      contactRole: clientData.contactRole,
+      ownerPhone: clientData.ownerPhone,
+      notes: clientData.notes,
+      photosBase64: clientData.photosBase64 || []
     };
-    if (fieldname) payload.fieldname = fieldname;
-    const result = await authFetch('/api/method/sfa_crm.api.upload_image', 'POST', payload);
-    if (result.message && result.message.success) return { success: true, file_url: result.message.file_url };
-    return { success: false, error: result.message?.error || "Upload failed" };
+    const res = await authFetch('/api/method/sfa_crm.api.sync_client', 'POST', { payload: JSON.stringify(payload) });
+    if (res.message && res.message.success) return { success: true, erpName: res.message.name };
+    return { success: false, error: res.message?.error || 'Unknown Error' };
   } catch (e) { return { success: false, error: e.message }; }
 };
 
@@ -97,7 +106,6 @@ export const pullMasterData = async () => {
       await AsyncStorage.setItem('offlineItems', JSON.stringify(formattedItems));
     }
     
-    // Fetching extra fields (image, mobile_no, business_type) for the Profile Screen
     const custRes = await authFetch('/api/resource/Customer?fields=["name","customer_name","custom_latitude","custom_longitude","image","mobile_no","custom_business_type"]&limit_page_length=500');
     const leadRes = await authFetch('/api/resource/Lead?fields=["name","lead_name as customer_name","image","mobile_no","custom_business_type"]&filters=[["status","!=","Converted"]]&limit_page_length=500');
     
@@ -107,14 +115,11 @@ export const pullMasterData = async () => {
     
     const baseUrl = await getBaseUrl();
     const formattedCusts = allClients.map(c => ({
-      id: c.name, 
-      name: c.customer_name, 
+      id: c.name, name: c.customer_name, 
       lat: c.custom_latitude ? parseFloat(c.custom_latitude) : null, 
       lng: c.custom_longitude ? parseFloat(c.custom_longitude) : null, 
       image: c.image ? `${baseUrl}${c.image}` : null,
-      phone: c.mobile_no || 'No Phone',
-      businessType: c.custom_business_type || 'Unknown Type',
-      status: 'Synced'
+      phone: c.mobile_no || 'No Phone', businessType: c.custom_business_type || 'Unknown Type', status: 'Synced'
     }));
     await AsyncStorage.setItem('offlineClients', JSON.stringify(formattedCusts));
     return { success: true };
@@ -123,25 +128,51 @@ export const pullMasterData = async () => {
 
 export const syncAllDataToERP = async () => {
   try {
+    // 1. Sync Offline Clients (KYC)
+    let existingClients = await AsyncStorage.getItem('offlineClients');
+    let clients = existingClients ? JSON.parse(existingClients) : [];
+    let clientsUpdated = false;
+    for (let i = 0; i < clients.length; i++) {
+      if (clients[i].status === 'Pending Sync') {
+        let res = await pushLiveClient(clients[i]);
+        if (res.success) {
+          clients[i].status = 'Synced';
+          clients[i].id = res.erpName; // Update local ID with official ERPNext ID
+          clientsUpdated = true;
+        }
+      }
+    }
+    if (clientsUpdated) await AsyncStorage.setItem('offlineClients', JSON.stringify(clients));
+
+    // 2. Sync Offline Orders
     let existingOrders = await AsyncStorage.getItem('offlineOrders');
     let orders = existingOrders ? JSON.parse(existingOrders) : [];
     for (let o of orders) {
       if (o.status === 'Pending Sync') {
+        // If order belongs to a pending client, update the name to the real ERP ID
+        let matchingClient = clients.find(c => c.name === o.clientName);
+        if (matchingClient && matchingClient.id) o.clientName = matchingClient.id;
+
         let res = await pushLiveOrder(o);
         if (res.success) { o.status = 'Synced'; o.erpName = res.erpName; }
       }
     }
     await AsyncStorage.setItem('offlineOrders', JSON.stringify(orders));
 
+    // 3. Sync Offline Visits
     let existingVisits = await AsyncStorage.getItem('offlineVisits');
     let visits = existingVisits ? JSON.parse(existingVisits) : [];
     for (let v of visits) {
       if (v.status === 'Pending Sync') {
+        let matchingClient = clients.find(c => c.name === v.customer);
+        if (matchingClient && matchingClient.id) v.customer = matchingClient.id;
+
         let res = await pushLiveVisit(v);
         if (res.success) { v.status = 'Synced'; }
       }
     }
     await AsyncStorage.setItem('offlineVisits', JSON.stringify(visits));
+
     return { success: true };
   } catch (e) { return { success: false, error: e.message }; }
 };

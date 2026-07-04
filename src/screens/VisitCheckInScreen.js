@@ -7,6 +7,23 @@ import * as Location from 'expo-location';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { pushLiveVisit } from '../api';
 
+// --- Haversine Distance Calculator (Returns distance in Kilometers) ---
+function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
+  const R = 6371; // Radius of the earth in km
+  const dLat = deg2rad(lat2 - lat1);
+  const dLon = deg2rad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c; 
+}
+
+function deg2rad(deg) {
+  return deg * (Math.PI / 180);
+}
+
 export default function VisitCheckInScreen({ navigation, route }) {
   const insets = useSafeAreaInsets();
   const { clientName } = route.params || {};
@@ -17,7 +34,7 @@ export default function VisitCheckInScreen({ navigation, route }) {
   const [photoBase64, setPhotoBase64] = useState(null);
   const [photoUri, setPhotoUri] = useState(null);
 
-  useEffect(() => {
+  useEffect(() => { 
     if (route.params?.orderPlaced) {
       setOutcome('order_taken');
     }
@@ -32,6 +49,38 @@ export default function VisitCheckInScreen({ navigation, route }) {
       let loc = await Location.getLastKnownPositionAsync({});
       if(!loc) loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Lowest });
       
+      // ==========================================
+      // GEOFENCING LOGIC 
+      // ==========================================
+      const clientsData = await AsyncStorage.getItem('offlineClients');
+      if (clientsData) {
+        const clients = JSON.parse(clientsData);
+        const targetClient = clients.find(c => c.name === clientName);
+        
+        // If the customer has registered GPS coordinates, enforce geofence
+        if (targetClient && targetClient.lat && targetClient.lng) {
+          const distKm = getDistanceFromLatLonInKm(
+            loc.coords.latitude, 
+            loc.coords.longitude, 
+            targetClient.lat, 
+            targetClient.lng
+          );
+          
+          const distMeters = Math.round(distKm * 1000);
+          const GEOFENCE_RADIUS = 200; // Allow Check-in within 200 meters
+          
+          if (distMeters > GEOFENCE_RADIUS) {
+            Alert.alert(
+              "Geofence Alert \ud83d\udeab", 
+              `You are ${distMeters} meters away from the shop. You must be within ${GEOFENCE_RADIUS}m to check in.`
+            );
+            setLoading(false);
+            return; // STOP THE CHECK-IN!
+          }
+        }
+      }
+      // ==========================================
+
       setStartTime(Date.now());
       await AsyncStorage.setItem('activeLat', loc.coords.latitude.toString());
       await AsyncStorage.setItem('activeLng', loc.coords.longitude.toString());
@@ -49,7 +98,6 @@ export default function VisitCheckInScreen({ navigation, route }) {
     }
   };
 
-  // FIX: Created a proper async handler to prevent the Syntax Error
   const handleTakeOrder = async () => {
     const lat = await AsyncStorage.getItem('activeLat');
     const lng = await AsyncStorage.getItem('activeLng');
@@ -79,7 +127,7 @@ export default function VisitCheckInScreen({ navigation, route }) {
     };
     
     const livePush = await pushLiveVisit(visitRecord);
-    if (livePush.success) visitRecord.status = 'Synced';
+    if (livePush && livePush.success) visitRecord.status = 'Synced';
     
     const existing = await AsyncStorage.getItem('offlineVisits');
     const visitsArray = existing ? JSON.parse(existing) : [];
@@ -88,9 +136,12 @@ export default function VisitCheckInScreen({ navigation, route }) {
     
     await AsyncStorage.removeItem('activeLat');
     await AsyncStorage.removeItem('activeLng');
-    setLoading(false);
+    setLoading(false); 
     
-    Alert.alert("Complete", "Visit Logged Successfully.", [{ text: "OK", onPress: () => navigation.navigate('HomeMain') }]);
+    Alert.alert("Complete", "Visit Logged Successfully.", [{ text: "OK", onPress: () => {
+      navigation.popToTop();
+      navigation.navigate('Clients'); 
+    }}]);
   };
 
   if (loading) return <View style={styles.centerContainer}><ActivityIndicator size="large" color="#D32F2F" /></View>;

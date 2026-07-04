@@ -1,10 +1,9 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Alert, Image, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Alert, Image } from 'react-native';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { authFetch } from '../api';
 
 export default function NewLeadScreen({ navigation }) {
   const [name, setName] = useState('');
@@ -15,7 +14,6 @@ export default function NewLeadScreen({ navigation }) {
   const [notes, setNotes] = useState('');
   const [location, setLocation] = useState(null);
   const [photos, setPhotos] = useState([]);
-  const [isRegistering, setIsRegistering] = useState(false);
 
   const businessTypes = ['Retail Shop', 'Wholesale', 'Supermarket', 'Kiosk', 'Pharmacy'];
   const roles = ['Owner', 'Manager', 'Employee'];
@@ -23,47 +21,41 @@ export default function NewLeadScreen({ navigation }) {
   const getRealGPS = async () => {
     let { status } = await Location.requestForegroundPermissionsAsync();
     if (status !== 'granted') return Alert.alert('Error', 'GPS Permission Denied');
-    let loc = await Location.getLastKnownPositionAsync({});
-    if(!loc) loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Lowest });
-    setLocation(loc.coords);
+    try {
+      let loc = await Location.getLastKnownPositionAsync({});
+      if(!loc) loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Lowest });
+      setLocation(loc.coords);
+    } catch(e) { Alert.alert('GPS Error', 'Could not fetch GPS.'); }
   };
 
   const openCamera = async () => {
     let result = await ImagePicker.launchCameraAsync({ quality: 0.3, base64: true });
-    if (!result.canceled) {
-      setPhotos(prev => [...prev, { uri: result.assets[0].uri, base64: result.assets[0].base64 }]);
-    }
+    if (!result.canceled) setPhotos(prev => [...prev, { uri: result.assets[0].uri, base64: result.assets[0].base64 }]);
   };
 
   const removePhoto = (index) => {
     setPhotos(prev => prev.filter((_, i) => i !== index));
   };
 
-  const saveClient = async () => {
+  const saveClientLocally = async () => {
     if (!name || !phone || !location || photos.length === 0) return Alert.alert("Required", "Name, Phone, GPS, and at least 1 Photo are required.");
     if (contactRole !== 'Owner' && !ownerPhone) return Alert.alert("Required", "Owner's Phone is required.");
 
-    setIsRegistering(true);
-    const payload = { 
-        name, phone, lat: location.latitude, lng: location.longitude, 
-        businessType, contactRole, ownerPhone, notes, 
-        photosBase64: photos.map(p => p.base64) 
+    const newClient = { 
+      id: `LOCAL-${Date.now()}`, 
+      name, phone, lat: location.latitude, lng: location.longitude, 
+      businessType, contactRole, ownerPhone, notes, 
+      photosBase64: photos.map(p => p.base64),
+      status: 'Pending Sync'
     };
 
-    const res = await authFetch('/api/method/sfa_crm.api.sync_client', 'POST', { payload: JSON.stringify(payload) });
-
-    if (res.message && res.message.success) {
-      let existing = await AsyncStorage.getItem('offlineClients');
-      let clients = existing ? JSON.parse(existing) : [];
-      clients.unshift({ id: res.message.name, name: name, lat: location.latitude, lng: location.longitude, status: 'Synced' });
-      await AsyncStorage.setItem('offlineClients', JSON.stringify(clients));
-      setIsRegistering(false);
-      Alert.alert("Success", "Client KYC Saved & Synced!");
-      navigation.goBack();
-    } else {
-      setIsRegistering(false);
-      Alert.alert("Error", res.message?.error || "Could not register client.");
-    }
+    let existing = await AsyncStorage.getItem('offlineClients');
+    let clients = existing ? JSON.parse(existing) : [];
+    clients.unshift(newClient);
+    await AsyncStorage.setItem('offlineClients', JSON.stringify(clients));
+    
+    Alert.alert("Saved Locally", "Client saved offline. It will be pushed to the server during Sync.");
+    navigation.goBack();
   };
 
   return (
@@ -72,18 +64,18 @@ export default function NewLeadScreen({ navigation }) {
         <Text style={styles.headerTitle}>New Client KYC</Text>
         <Text style={styles.headerSub}>Fill in client details accurately</Text>
       </View>
+
       <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 100 }}>
-        
         <View style={styles.card}>
           <Text style={styles.label}>Business Information</Text>
           <View style={styles.inputWrapper}>
             <MaterialCommunityIcons name="storefront" size={20} color="#888" style={styles.inputIcon} />
-            <TextInput style={styles.input} placeholder="Business Name" value={name} onChangeText={setName} />
+            <TextInput style={styles.input} placeholderTextColor="#888" placeholder="Business Name" value={name} onChangeText={setName} />
           </View>
           
           <View style={styles.inputWrapper}>
             <MaterialCommunityIcons name="phone" size={20} color="#888" style={styles.inputIcon} />
-            <TextInput style={styles.input} placeholder="Phone Number (07...)" keyboardType="phone-pad" value={phone} onChangeText={setPhone} />
+            <TextInput style={styles.input} placeholderTextColor="#888" placeholder="Phone Number (07...)" keyboardType="phone-pad" value={phone} onChangeText={setPhone} />
           </View>
 
           <Text style={styles.subLabel}>Business Type</Text>
@@ -105,12 +97,18 @@ export default function NewLeadScreen({ navigation }) {
               </TouchableOpacity>
             ))}
           </View>
+
           {contactRole !== 'Owner' && (
             <View style={[styles.inputWrapper, {borderColor: '#D32F2F', borderWidth: 1}]}>
               <MaterialCommunityIcons name="phone-alert" size={20} color="#D32F2F" style={styles.inputIcon} />
-              <TextInput style={styles.input} placeholder="Actual Owner's Phone *" keyboardType="phone-pad" value={ownerPhone} onChangeText={setOwnerPhone} />
+              <TextInput style={styles.input} placeholderTextColor="#888" placeholder="Actual Owner's Phone *" keyboardType="phone-pad" value={ownerPhone} onChangeText={setOwnerPhone} />
             </View>
           )}
+
+          <Text style={[styles.label, {marginTop: 15}]}>Observations / Notes</Text>
+          <View style={[styles.inputWrapper, {height: 80, alignItems: 'flex-start', paddingTop: 10}]}>
+            <TextInput style={[styles.input, {textAlignVertical: 'top'}]} placeholderTextColor="#888" multiline placeholder="E.g., Shop is busy..." value={notes} onChangeText={setNotes} />
+          </View>
         </View>
 
         <View style={styles.card}>
@@ -128,6 +126,7 @@ export default function NewLeadScreen({ navigation }) {
               <MaterialCommunityIcons name="camera-plus" size={35} color="#D32F2F" />
               <Text style={{color: '#D32F2F', fontSize: 10, marginTop: 5, fontWeight:'bold'}}>Add Photo</Text>
             </TouchableOpacity>
+            
             {photos.map((p, idx) => (
               <View key={idx} style={styles.imgWrapper}>
                 <Image source={{uri: p.uri}} style={styles.imgThumb} />
@@ -139,13 +138,11 @@ export default function NewLeadScreen({ navigation }) {
             ))}
           </ScrollView>
         </View>
-
       </ScrollView>
 
-      {/* Sticky Bottom Bar */}
       <View style={styles.bottomBar}>
-        <TouchableOpacity style={[styles.saveBtn, isRegistering && {backgroundColor: '#999'}]} onPress={saveClient} disabled={isRegistering}>
-          {isRegistering ? <ActivityIndicator color="white" /> : <Text style={styles.saveBtnText}>Register KYC Client</Text>}
+        <TouchableOpacity style={styles.saveBtn} onPress={saveClientLocally}>
+          <Text style={styles.saveBtnText}>Save Offline Client</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -163,7 +160,6 @@ const styles = StyleSheet.create({
   inputWrapper: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f9f9f9', borderRadius: 10, paddingHorizontal: 15, height: 50, marginBottom: 15 },
   inputIcon: { marginRight: 10 },
   input: { flex: 1, fontSize: 15, color: '#333' },
-  chipContainer: { flexDirection: 'row' },
   rowChips: { flexDirection: 'row', marginBottom: 15 },
   chip: { backgroundColor: '#f0f0f0', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, marginRight: 10 },
   chipActive: { backgroundColor: '#D32F2F' },
