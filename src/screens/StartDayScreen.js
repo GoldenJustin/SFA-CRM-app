@@ -1,15 +1,21 @@
-﻿import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { pullMasterData } from '../api';
+import ModernAlert from '../components/ModernAlert';
 
 export default function StartDayScreen({ navigation }) {
   const [loading, setLoading] = useState(true);
   const [isPulling, setIsPulling] = useState(false);
+  const [toast, setToast] = useState({ visible: false, title: '', message: '', type: 'success' });
 
   useEffect(() => { checkDayStatus(); }, []);
+
+  const triggerToast = (title, message, type = 'success') => {
+    setToast({ visible: true, title, message, type });
+  };
 
   const checkDayStatus = async () => {
     const status = await AsyncStorage.getItem('dayStarted');
@@ -19,24 +25,40 @@ export default function StartDayScreen({ navigation }) {
 
   const handleStartDay = async () => {
     setIsPulling(true);
-    // Fetch Customers and Items from ERPNext!
-    await AsyncStorage.removeItem('offlineOrders'); // Wipes Dummy Data
+    console.log("[SHIFT]: Starting shift initialization...");
+    
+    await AsyncStorage.removeItem('offlineOrders');
     await AsyncStorage.removeItem('offlineVisits');
+    
     const result = await pullMasterData();
     setIsPulling(false);
-
+    
     if (!result.success) {
-      Alert.alert("Offline Mode", "Could not reach ERPNext. Starting day with previously saved data.");
+      triggerToast("Offline Mode ⚠️", "Could not reach ERPNext. Starting shift with previously saved route cache.", "info");
+      setTimeout(async () => {
+        await AsyncStorage.setItem('dayStarted', 'true');
+        navigation.replace('MainTabs');
+      }, 2500);
+    } else {
+      triggerToast("Shift Active ✅", "Route profile loaded. Shift started.", "success");
+      setTimeout(async () => {
+        await AsyncStorage.setItem('dayStarted', 'true');
+        navigation.replace('MainTabs');
+      }, 2000);
     }
-
-    await AsyncStorage.setItem('dayStarted', 'true');
-    navigation.replace('MainTabs');
   };
 
   if (loading) return null;
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      <ModernAlert 
+        visible={toast.visible} 
+        title={toast.title} 
+        message={toast.message} 
+        type={toast.type} 
+        onClose={() => setToast(prev => ({ ...prev, visible: false }))} 
+      />
       <View style={styles.centerContainer}>
         <MaterialCommunityIcons name="clock-start" size={80} color="#D32F2F" />
         <Text style={styles.title}>Start Your Shift</Text>
@@ -44,9 +66,9 @@ export default function StartDayScreen({ navigation }) {
         
         <TouchableOpacity style={styles.startDayBtn} onPress={handleStartDay} disabled={isPulling}>
           {isPulling ? (
-            <View style={{flexDirection: 'row', alignItems: 'center'}}>
-              <ActivityIndicator color="white" style={{marginRight: 10}} />
-              <Text style={styles.btnText}>PULLING DATA FROM ERPNEXT...</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <ActivityIndicator color="white" style={{ marginRight: 10 }} />
+              <Text style={styles.btnText}>FETCHING DATA...</Text>
             </View>
           ) : (
             <Text style={styles.btnText}>CLOCK IN & FETCH DATA</Text>
@@ -65,4 +87,3 @@ const styles = StyleSheet.create({
   startDayBtn: { backgroundColor: '#4CAF50', padding: 15, borderRadius: 8, width: '100%', alignItems: 'center', elevation: 3 },
   btnText: { color: 'white', fontWeight: 'bold', fontSize: 16 }
 });
-

@@ -1,45 +1,93 @@
-import React from 'react';
-import { Modal, View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { Animated, View, Text, StyleSheet, TouchableOpacity, Dimensions } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 
+const { width } = Dimensions.get('window');
+
 export default function ModernAlert({ visible, title, message, type = 'success', onClose }) {
-  const getIcon = () => {
+  const slideAnim = useRef(new Animated.Value(-100)).current;
+
+  useEffect(() => {
+    if (visible) {
+      Animated.spring(slideAnim, {
+        toValue: 20,
+        useNativeDriver: true,
+        bounciness: 8
+      }).start();
+    } else {
+      Animated.timing(slideAnim, {
+        toValue: -120,
+        duration: 200,
+        useNativeDriver: true
+      }).start();
+    }
+  }, [visible]);
+
+  if (!visible) return null;
+
+  const getTheme = () => {
     switch (type) {
-      case 'error': return 'close-circle';
-      case 'info': return 'information-outline';
-      default: return 'check-circle';
+      case 'error': return { color: '#D32F2F', icon: 'close-circle', bg: '#FFEBEE' };
+      case 'info': return { color: '#1976D2', icon: 'information', bg: '#E3F2FD' };
+      default: return { color: '#388E3C', icon: 'check-circle', bg: '#E8F5E9' };
     }
   };
 
-  const getColor = () => {
-    switch (type) {
-      case 'error': return '#E53935';
-      case 'info': return '#1976D2';
-      default: return '#4CAF50';
-    }
-  };
+  const theme = getTheme();
 
   return (
-    <Modal visible={visible} transparent animationType="fade">
-      <View style={styles.overlay}>
-        <View style={styles.alertBox}>
-          <MaterialCommunityIcons name={getIcon()} size={50} color={getColor()} />
-          <Text style={styles.title}>{title}</Text>
+    <Animated.View style={[styles.container, { transform: [{ translateY: slideAnim }] }]}>
+      <View style={[styles.toast, { borderColor: theme.color, backgroundColor: theme.bg }]}>
+        <MaterialCommunityIcons name={theme.icon} size={28} color={theme.color} />
+        <View style={styles.textContainer}>
+          <Text style={[styles.title, { color: theme.color }]}>{title}</Text>
           <Text style={styles.message}>{message}</Text>
-          <TouchableOpacity style={[styles.btn, { backgroundColor: getColor() }]} onPress={onClose}>
-            <Text style={styles.btnText}>DISMISS</Text>
-          </TouchableOpacity>
         </View>
+        <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
+          <MaterialCommunityIcons name="close" size={18} color="#777" />
+        </TouchableOpacity>
       </View>
-    </Modal>
+    </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-  alertBox: { width: '80%', backgroundColor: 'white', borderRadius: 20, padding: 25, alignItems: 'center', elevation: 10 },
-  title: { fontSize: 20, fontWeight: 'bold', marginVertical: 10, color: '#333' },
-  message: { fontSize: 14, color: '#666', textAlign: 'center', marginBottom: 20, lineHeight: 20 },
-  btn: { width: '100%', paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
-  btnText: { color: 'white', fontWeight: 'bold', fontSize: 15 }
+  container: {
+    position: 'absolute',
+    top: 40,
+    left: 20,
+    right: 20,
+    zIndex: 9999,
+    elevation: 100
+  },
+  toast: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    borderRadius: 12,
+    borderLeftWidth: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 5
+  },
+  textContainer: {
+    flex: 1,
+    marginLeft: 12,
+    marginRight: 8
+  },
+  title: {
+    fontWeight: 'bold',
+    fontSize: 15,
+    marginBottom: 2
+  },
+  message: {
+    fontSize: 13,
+    color: '#444',
+    lineHeight: 18
+  },
+  closeBtn: {
+    padding: 4
+  }
 });
