@@ -5,6 +5,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import ModernAlert from '../components/ModernAlert';
+import { getDownloadAuthHeaders } from '../api';
 
 export default function OrderDetailsScreen({ route }) {
     const { order } = route.params;
@@ -37,15 +38,17 @@ export default function OrderDetailsScreen({ route }) {
 
         try {
             const url = await AsyncStorage.getItem('erp_url');
-            const sid = await AsyncStorage.getItem('erp_sid');
             const baseUrl = url ? url.replace(/\/$/, "") : 'http://server.royal.co.tz:8092';
             const doctype = order.type === 'Quotation' ? 'Quotation' : 'Sales Order';
 
             const pdfUrl = `${baseUrl}/api/method/frappe.utils.print_format.download_pdf?doctype=${encodeURIComponent(doctype)}&name=${encodeURIComponent(order.erpName)}&format=${encodeURIComponent(activeFormat)}&no_letterhead=0`;
             const fileUri = `${FileSystem.documentDirectory}${order.erpName}.pdf`;
 
+            // Uses the permanent API token when available (never expires),
+            // otherwise falls back to the sid session cookie.
+            const authHeaders = await getDownloadAuthHeaders();
             const result = await FileSystem.downloadAsync(pdfUrl, fileUri, {
-                headers: { 'Cookie': `sid=${sid}` }
+                headers: authHeaders
             });
 
             setDownloading(false);
