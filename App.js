@@ -1,12 +1,17 @@
-﻿// Save this content over: App.js
+// Save this content over: App.js
 import React, { useEffect } from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, createNavigationContainerRef, CommonActions } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
+import { Alert } from 'react-native';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import AppNavigator from './src/navigation/AppNavigator';
-import { authFetch } from './src/api';
+import { authFetch, setSessionExpiredHandler } from './src/api';
+
+// Global navigation ref so the API layer can force a redirect to Login
+// whenever ERPNext reports that the session (sid) has expired.
+export const navigationRef = createNavigationContainerRef();
 
 const LOCATION_TASK_NAME = 'background-sfa-location-task';
 
@@ -33,6 +38,17 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
 
 export default function App() {
   useEffect(() => {
+    // When any API call detects an expired/invalid ERPNext session, clear the
+    // stack and send the user to Login instead of failing silently forever.
+    setSessionExpiredHandler(() => {
+      Alert.alert('Session Expired', 'Your ERPNext session has expired. Please log in again.');
+      if (navigationRef.isReady()) {
+        navigationRef.dispatch(
+          CommonActions.reset({ index: 0, routes: [{ name: 'Login' }] })
+        );
+      }
+    });
+
     const startTracking = async () => {
       let { status } = await Location.requestForegroundPermissionsAsync();
       if (status === 'granted') {
@@ -54,7 +70,7 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <NavigationContainer>
+      <NavigationContainer ref={navigationRef}>
         <StatusBar style="light" backgroundColor="#D32F2F" />
         <AppNavigator />
       </NavigationContainer>

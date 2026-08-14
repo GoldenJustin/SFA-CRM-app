@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, Image } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { loginToERP, authFetch } from '../api';
+import { loginToERP, authFetch, validateSession } from '../api';
 
 export default function LoginScreen({ navigation }) {
   const [email, setEmail] = useState('');
@@ -17,18 +17,26 @@ export default function LoginScreen({ navigation }) {
 
   const checkExistingSession = async () => {
     try {
-      const sid = await AsyncStorage.getItem('erp_sid');
       const dayStarted = await AsyncStorage.getItem('dayStarted');
-      
-      if (sid) {
-        // User is logged in. Skip login screen!
+
+      // Ask the ERPNext server whether the stored sid is still alive,
+      // instead of blindly trusting that one exists locally. This is what
+      // previously forced users to uninstall/reinstall: a dead sid was kept
+      // forever and every API call silently failed.
+      const session = await validateSession();
+
+      if (session.valid || session.offlineOk) {
+        // Session confirmed valid, OR server unreachable (allow offline work
+        // with cached data; authFetch will redirect to Login if the session
+        // turns out to be dead once connectivity returns).
         if (dayStarted === 'true') {
           navigation.replace('MainTabs');
         } else {
           navigation.replace('StartDay');
         }
       } else {
-        setLoading(false); // No session, show login form
+        // No session or session expired -> show login form
+        setLoading(false);
       }
     } catch (e) {
       setLoading(false);

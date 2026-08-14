@@ -4,7 +4,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import * as Location from 'expo-location';
-import { authFetch } from '../api';
+import { authFetch, logoutFromERP } from '../api';
 
 const { width } = Dimensions.get('window');
 
@@ -75,7 +75,7 @@ export default function DashboardScreen({ navigation }) {
     const handleLogout = async () => {
         Alert.alert("Logout", "Are you sure you want to log out?", [
             { text: "Cancel", style: "cancel" },
-            { text: "Logout", onPress: async () => { await AsyncStorage.clear(); navigation.replace('Login'); } }
+            { text: "Logout", onPress: async () => { await logoutFromERP(); await AsyncStorage.clear(); navigation.replace('Login'); } }
         ]);
     };
 

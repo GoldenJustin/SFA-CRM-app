@@ -5,6 +5,103 @@ const getBaseUrl = async () => {
   return url ? url.replace(/\/$/, "") : 'http://server.royal.co.tz:8092';
 };
 
+// ---------------------------------------------------------------------------
+// SESSION LIFECYCLE
+// ---------------------------------------------------------------------------
+// ERPNext session cookies (sid) expire server-side. Previously the app stored
+// the sid forever, never checked HTTP status codes, and React Native's
+// persistent NATIVE cookie jar kept re-sending stale cookies until the app was
+// uninstalled. Fixes:
+//   1. credentials: 'omit' on every fetch -> the native cookie jar is bypassed
+//      entirely; ONLY the sid we explicitly manage in AsyncStorage is sent.
+//   2. authFetch detects 401/403 AuthenticationError -> clears the dead sid
+//      and notifies App.js so the user is routed back to the Login screen.
+//   3. validateSession() lets the Login screen verify the sid with the server
+//      instead of blindly trusting that one exists.
+// ---------------------------------------------------------------------------
+
+let onSessionExpired = null;
+let sessionExpiredNotified = false;
+
+// App.js registers a callback that navigates the user back to Login.
+export const setSessionExpiredHandler = (handler) => {
+  onSessionExpired = handler;
+};
+
+export const clearSession = async () => {
+  await AsyncStorage.multiRemove(['erp_sid', 'erp_user']);
+};
+
+const handleAuthFailure = async () => {
+  console.log('[AUTH]: Session rejected by server (expired/invalid). Clearing stored session.');
+  await clearSession();
+  if (!sessionExpiredNotified && onSessionExpired) {
+    sessionExpiredNotified = true; // fire once, not for every queued request
+    onSessionExpired();
+  }
+};
+
+// Frappe signals auth problems in several ways; check them all.
+const isAuthErrorResponse = (status, bodyText) => {
+  if (status !== 401 && status !== 403) return false;
+  if (status === 401) return true;
+  try {
+    const parsed = JSON.parse(bodyText);
+    if (parsed.session_expired) return true;
+    const excType = parsed.exc_type || '';
+    if (excType.indexOf('AuthenticationError') !== -1) return true;
+    if (excType.indexOf('CSRFTokenError') !== -1) return true;
+    const asText = bodyText || '';
+    return asText.indexOf('AuthenticationError') !== -1 || asText.indexOf('session_expired') !== -1;
+  } catch (e) {
+    return true; // 403 with unparseable body -> treat as auth failure
+  }
+};
+
+// Cheap server-side check of whether the stored sid is still alive.
+// Returns { valid, user } or { valid: false, offlineOk } when the server
+// simply cannot be reached (so offline usage stays possible).
+export const validateSession = async () => {
+  const sid = await AsyncStorage.getItem('erp_sid');
+  if (!sid) return { valid: false, reason: 'no_session' };
+  const baseUrl = await getBaseUrl();
+  try {
+    const response = await fetch(`${baseUrl}/api/method/frappe.auth.get_logged_user`, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json', 'Cookie': `sid=${sid}` },
+      credentials: 'omit'
+    });
+    if (response.ok) {
+      const data = await response.json();
+      if (data.message && data.message !== 'Guest') {
+        console.log(`[AUTH]: Session check OK. Logged in as ${data.message}`);
+        return { valid: true, user: data.message };
+      }
+      console.log('[AUTH]: Session check returned Guest. Session is dead.');
+      await clearSession();
+      return { valid: false, reason: 'expired' };
+    }
+    if (response.status === 401 || response.status === 403) {
+      console.log(`[AUTH]: Session check rejected (HTTP ${response.status}).`);
+      await clearSession();
+      return { valid: false, reason: 'expired' };
+    }
+    // Server up but misbehaving (5xx etc.) - don't punish the user.
+    return { valid: false, reason: 'server_error', offlineOk: true };
+  } catch (e) {
+    // Network unreachable - allow offline continuation.
+    console.log(`[AUTH]: Session check skipped (offline): ${e.message}`);
+    return { valid: false, reason: 'network', offlineOk: true };
+  }
+};
+
+export const logoutFromERP = async () => {
+  try {
+    await authFetch('/api/method/logout', 'POST');
+  } catch (e) {}
+  await clearSession();
+};
+
 export const loginToERP = async (email, password) => {
   const baseUrl = await getBaseUrl();
   console.log(`[AUTH]: Attempting login to ${baseUrl} for ${email}`);
@@ -12,7 +109,8 @@ export const loginToERP = async (email, password) => {
     const response = await fetch(`${baseUrl}/api/method/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify({ usr: email, pwd: password })
+      body: JSON.stringify({ usr: email, pwd: password }),
+      credentials: 'omit' // keep RN's native cookie jar out of the picture
     });
     const data = await response.json();
     if (response.ok && data.message === "Logged In") {
@@ -22,9 +120,14 @@ export const loginToERP = async (email, password) => {
         const match = cookieStr.match(/sid=([^;]+)/);
         if (match) sid = match[1];
       }
+      if (!sid) {
+        console.log('[AUTH]: Login OK but no sid cookie received.');
+        return { success: false, error: 'Server did not return a session. Contact administrator.' };
+      }
       await AsyncStorage.setItem('erp_sid', sid);
       await AsyncStorage.setItem('erp_user', data.full_name);
       await AsyncStorage.setItem('erp_url', baseUrl);
+      sessionExpiredNotified = false; // fresh session -> re-arm the expiry handler
       console.log(`[AUTH]: Login successful. Session SID initialized.`);
       return { success: true, user: data.full_name };
     } else {
@@ -47,7 +150,10 @@ export const authFetch = async (endpoint, method = 'GET', body = null) => {
   if (sid) {
     headers['Cookie'] = `sid=${sid}`;
   }
-  const config = { method, headers };
+  // credentials:'omit' prevents React Native's persistent native cookie store
+  // from silently attaching/overriding cookies. Without this, a stale sid kept
+  // being sent until the app was uninstalled.
+  const config = { method, headers, credentials: 'omit' };
   if (body) config.body = JSON.stringify(body);
 
   console.log(`[API REQUEST]: ${method} -> ${endpoint}`);
@@ -55,7 +161,19 @@ export const authFetch = async (endpoint, method = 'GET', body = null) => {
     const response = await fetch(`${baseUrl}${endpoint}`, config);
     const text = await response.text();
     console.log(`[API RESPONSE]: Code ${response.status}`);
-    return JSON.parse(text);
+
+    // Detect expired/invalid session and recover instead of failing silently.
+    if (isAuthErrorResponse(response.status, text)) {
+      await handleAuthFailure();
+      return { success: false, error: 'Session expired. Please log in again.', sessionExpired: true };
+    }
+
+    try {
+      return JSON.parse(text);
+    } catch (parseErr) {
+      console.log(`[API ERROR]: Non-JSON response (HTTP ${response.status}) from ${endpoint}`);
+      return { success: false, error: `Unexpected server response (HTTP ${response.status})` };
+    }
   } catch (e) {
     console.log(`[API ERROR]: Failure requesting ${endpoint}: ${e.message}`);
     return { success: false, error: e.message };
