@@ -443,17 +443,33 @@ export const pullMasterData = async () => {
       await AsyncStorage.setItem('sfaSettings', JSON.stringify(settings.message));
     }
 
-    const itemsRes = await authFetch('/api/resource/Item?fields=["name","item_name"]&limit_page_length=500');
-    const pricesRes = await authFetch('/api/resource/Item Price?fields=["item_code","price_list_rate"]&filters=[["selling","=",1]]&limit_page_length=500');
-    
-    if (itemsRes && itemsRes.data) {
-      const prices = pricesRes.data || [];
-      const formattedItems = itemsRes.data.map(i => {
-        const pObj = prices.find(p => p.item_code === i.name);
-        return { id: i.name, name: i.item_name, price: pObj ? pObj.price_list_rate : 0 };
-      });
-      await AsyncStorage.setItem('offlineItems', JSON.stringify(formattedItems));
-      console.log(`[PULL-MASTER]: Synced ${formattedItems.length} items with prices.`);
+    // Preferred: server-side filtered catalog. Only items with
+    // 'Show in SFA App' enabled in ERPNext are returned - hidden items
+    // never reach the device.
+    const catalogRes = await authFetch('/api/method/sfa_crm.api.get_sfa_items');
+    if (catalogRes && catalogRes.message && catalogRes.message.success) {
+      await AsyncStorage.setItem('offlineItems', JSON.stringify(catalogRes.message.items));
+      console.log(`[PULL-MASTER]: Synced ${catalogRes.message.items.length} SFA-visible items (server-filtered).`);
+    } else {
+      // Fallback for servers not yet updated with get_sfa_items:
+      // filter by the flag directly in the resource query.
+      console.log('[PULL-MASTER]: get_sfa_items unavailable, using legacy item query.');
+      let itemsRes = await authFetch('/api/resource/Item?fields=["name","item_name"]&filters=[["disabled","=",0],["custom_show_in_sfa_app","=",1]]&limit_page_length=500');
+      if (!itemsRes || !itemsRes.data) {
+        // Oldest servers without the custom field at all.
+        itemsRes = await authFetch('/api/resource/Item?fields=["name","item_name"]&filters=[["disabled","=",0]]&limit_page_length=500');
+      }
+      const pricesRes = await authFetch('/api/resource/Item Price?fields=["item_code","price_list_rate"]&filters=[["selling","=",1]]&limit_page_length=500');
+
+      if (itemsRes && itemsRes.data) {
+        const prices = pricesRes.data || [];
+        const formattedItems = itemsRes.data.map(i => {
+          const pObj = prices.find(p => p.item_code === i.name);
+          return { id: i.name, name: i.item_name, price: pObj ? pObj.price_list_rate : 0 };
+        });
+        await AsyncStorage.setItem('offlineItems', JSON.stringify(formattedItems));
+        console.log(`[PULL-MASTER]: Synced ${formattedItems.length} items with prices.`);
+      }
     }
 
     const custRes = await authFetch('/api/resource/Customer?fields=["name","customer_name","custom_latitude","custom_longitude","image","mobile_no","custom_business_type"]&limit_page_length=500');
